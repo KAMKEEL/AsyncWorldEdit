@@ -8,6 +8,12 @@
     <version>3.5.4</version>
     <packaging>pom</packaging>
     <name>AsyncWorldEdit_AllInOne</name>
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
     <modules>
         <module>AsyncWorldEdit</module>
         <module>AsyncWorldEdit-ActionBarAPI</module>

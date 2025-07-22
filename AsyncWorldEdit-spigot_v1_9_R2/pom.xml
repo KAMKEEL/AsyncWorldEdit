@@ -27,8 +27,6 @@
             <groupId>me.maxedoutfreaky</groupId>
             <artifactId>welcometitle</artifactId>
             <version>3.5</version>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/../libs/APIs/Spigot_v1_9_R2.jar</systemPath>
         </dependency>
         <dependency>
             <groupId>org.bukkit</groupId>
