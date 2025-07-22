@@ -1,0 +1,6 @@
+
+plugins {}
+
+tasks.register('build', Exec) {
+    commandLine 'mvn', 'package', '-DskipTests'
+}

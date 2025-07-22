@@ -9,7 +9,6 @@
     <packaging>pom</packaging>
     <name>AsyncWorldEdit_AllInOne</name>
     <modules>
-        <module>JarProcessor</module>
         <module>AsyncWorldEdit</module>
         <module>AsyncWorldEdit-ActionBarAPI</module>
         <module>AsyncWorldEdit-ActionMessager</module>
