@@ -43,3 +43,8 @@ lib/
 /AsyncWorldEdit-spigot_v1_8_R3/target/
 /AsyncWorldEdit-spigot_v1_12_R1_12_1/target/
 /AsyncWorldEdit-Deploy/target/
+# Ignore Gradle project-specific cache directory
+.gradle
+
+# Ignore Gradle build output directory
+build
