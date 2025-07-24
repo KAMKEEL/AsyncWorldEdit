@@ -15,14 +15,19 @@
         <maven.compiler.target>1.8</maven.compiler.target>
     </properties>
 
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
+
     <dependencies>
         <dependency>
-            <groupId>com.sk89q.worldedit</groupId>
-            <artifactId>worldedit-core</artifactId>
-            <version>6.1.9-SNAPSHOT</version>
-            <type>jar</type>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/../libs/worldedit/worldedit-core-6.1.9-SNAPSHOT-dist.jar</systemPath>
+            <groupId>com.github.GTNewHorizons</groupId>
+            <artifactId>WorldEdit-GTNH</artifactId>
+            <version>HEAD-SNAPSHOT</version>
+            <classifier>all</classifier>
         </dependency>
         <dependency>
             <groupId>org.bukkit</groupId>
@@ -31,11 +36,9 @@
             <type>jar</type>
         </dependency>
         <dependency>
-            <groupId>net.minecraftforge</groupId>
-            <artifactId>fml</artifactId>
-            <version>1.7.10</version>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/../libs/forge/fml-1.7.10-7.10.142.1104-1.7.10-universal.jar</systemPath>
+            <groupId>com.github.GTNewHorizons</groupId>
+            <artifactId>Forge</artifactId>
+            <version>1.7.10-142.1104</version>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
