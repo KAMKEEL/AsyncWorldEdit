@@ -37,8 +37,10 @@
         <dependency>
             <groupId>org.bukkit</groupId>
             <artifactId>bukkit</artifactId>
-            <version>[1.12.2, 1.13.0)</version>
+            <version>1.12.2</version>
             <type>jar</type>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/../libs/craftbukkit-1.12.2.jar</systemPath>
         </dependency>
     </dependencies>
 </project>

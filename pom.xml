@@ -9,10 +9,8 @@
     <packaging>pom</packaging>
     <name>AsyncWorldEdit_AllInOne</name>
     <modules>
-        <module>JarProcessor</module>
         <module>AsyncWorldEdit</module>
         <module>AsyncWorldEdit-ActionBarAPI</module>
-        <module>AsyncWorldEdit-ActionMessager</module>
         <module>AsyncWorldEdit-API</module>
         <module>AsyncWorldEdit-APIInner</module>
         <module>AsyncWorldEdit-BarAPI</module>
@@ -21,7 +19,6 @@
         <module>AsyncWorldEdit-BountifulAPI</module>
         <module>AsyncWorldEdit-Deploy</module>
         <module>AsyncWorldEditInjector</module>
-        <module>AsyncWorldEdit-PlotMe013g</module>
         <module>AsyncWorldEdit-PlotMeCore015</module>
         <module>AsyncWorldEdit-PlotMeCore016</module>        
         <module>AsyncWorldEdit-spigot_v1_10_R1</module>
@@ -33,6 +30,5 @@
         <module>AsyncWorldEdit-spigot_v1_9_R2</module>
         <module>AsyncWorldEdit-TitleManager</module>
         <module>AsyncWorldEdit-Utils</module>
-        <module>AsyncWorldEdit-WelcomeTitle</module>        
     </modules>
 </project>
