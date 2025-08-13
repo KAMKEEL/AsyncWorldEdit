@@ -27,15 +27,17 @@
         <dependency>
             <groupId>org.bukkit</groupId>
             <artifactId>bukkit</artifactId>
-            <version>[1.12.2, 1.13)</version>
+            <version>1.12.2</version>
             <type>jar</type>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/../libs/craftbukkit-1.12.2.jar</systemPath>
         </dependency>
         <dependency>
             <groupId>net.minecraftforge</groupId>
             <artifactId>fml</artifactId>
             <version>1.7.10</version>
             <scope>system</scope>
-            <systemPath>${project.basedir}/../libs/forge/fml-1.7.10-7.10.142.1104-1.7.10-universal.jar</systemPath>
+            <systemPath>${project.basedir}/../libs/forge/forge-1.7.10-10.13.4.1614-1.7.10-universal.jar</systemPath>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
