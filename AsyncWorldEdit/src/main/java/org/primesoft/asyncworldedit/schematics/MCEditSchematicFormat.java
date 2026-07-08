@@ -95,9 +95,11 @@ public class MCEditSchematicFormat implements ISchematicReader {
     private final static String TAG_ORIGIN_Z = "WEOriginZ";
     private final static String TAG_BLOCKS = "Blocks";
     private final static String TAG_BLOCKS_A = "AddBlocks";
+    private final static String TAG_BLOCKS_A2 = "AddBlocks2";
     private final static String TAG_TILE_ENTITIES = "TileEntities";
     private final static String TAG_ENTITIES = "Entities";
     private final static String TAG_DATA = "Data";
+    private final static String TAG_DATA_A = "AddData";
 
     private static <T extends Tag> boolean tryGetTag(Map<String, Tag> items, String key, Class<T> cls, InOutParam<T> out) {
         if (!items.containsKey(key)) {
@@ -128,7 +130,9 @@ public class MCEditSchematicFormat implements ISchematicReader {
 
         InOutParam<ByteArrayTag> blocks = InOutParam.Out();
         InOutParam<ByteArrayTag> blocksAdd = InOutParam.Out();
+        InOutParam<ByteArrayTag> blocksAdd2 = InOutParam.Out();
         InOutParam<ByteArrayTag> data = InOutParam.Out();
+        InOutParam<ByteArrayTag> dataAdd = InOutParam.Out();
         InOutParam<ListTag> tileEntities = InOutParam.Out();
         InOutParam<ListTag> entities = InOutParam.Out();
 
@@ -143,7 +147,9 @@ public class MCEditSchematicFormat implements ISchematicReader {
 
         tryGetTag(schematic, TAG_BLOCKS, ByteArrayTag.class, blocks);
         tryGetTag(schematic, TAG_BLOCKS_A, ByteArrayTag.class, blocksAdd);
+        tryGetTag(schematic, TAG_BLOCKS_A2, ByteArrayTag.class, blocksAdd2);
         tryGetTag(schematic, TAG_DATA, ByteArrayTag.class, data);
+        tryGetTag(schematic, TAG_DATA_A, ByteArrayTag.class, dataAdd);
         tryGetTag(schematic, TAG_TILE_ENTITIES, ListTag.class, tileEntities);
         tryGetTag(schematic, TAG_ENTITIES, ListTag.class, entities);
 
@@ -177,8 +183,14 @@ public class MCEditSchematicFormat implements ISchematicReader {
         if (blocksAdd.isSet()) {
             result.setBlocksEx(blocksAdd.getValue().getValue());
         }
+        if (blocksAdd2.isSet()) {
+            result.setBlocksEx2(blocksAdd2.getValue().getValue());
+        }
         if (data.isSet()) {
             result.setData(data.getValue().getValue());
+        }
+        if (dataAdd.isSet()) {
+            result.setDataAdd(dataAdd.getValue().getValue());
         }
         if (tileEntities.isSet()) {
             result.setTileEntities(tileEntities.getValue().getValue());
@@ -278,6 +290,7 @@ public class MCEditSchematicFormat implements ISchematicReader {
             BlockVector to, OrientationTransform transform, IAweEditSession editSesstion) throws MaxChangedBlocksException {
 
         final byte[] blockData = data.getData();
+        final byte[] blockDataAdd = data.getDataAdd();
         final short[] blocks = calculateIds(data);
         final HashMap<Integer, HashMap<Integer, HashMap<Integer, CompoundTag>>> tileEntties
                 = mapTileEntites(data);
@@ -291,8 +304,12 @@ public class MCEditSchematicFormat implements ISchematicReader {
                 final HashMap<Integer, CompoundTag> xMap = zMap != null ? zMap.get(z) : null;
 
                 for (int x = 0; x < width; x++) {
-                    short id = blocks[index];
-                    short d = blockData[index];
+                    int id = blocks[index] & 0xFFFF;
+                    // Unsigned data byte plus optional AddData high bits (NEID)
+                    int d = blockData[index] & 0xFF;
+                    if (blockDataAdd != null && index < blockDataAdd.length) {
+                        d |= (blockDataAdd[index] & 0xFF) << 8;
+                    }
 
                     if (id != 0 || !ignoreAirBlocks) {
                         BaseBlock block = new BaseBlock(id, d);
@@ -323,6 +340,7 @@ public class MCEditSchematicFormat implements ISchematicReader {
     private short[] calculateIds(SchematicData data) {
         final byte[] blockId = data.getBlocks();
         final byte[] blockIdEx = data.getBlocksAdd();
+        final byte[] blockIdEx2 = data.getBlocksAdd2();
         final short[] blocks = new short[blockId.length];
         //Combine the ID and IDEx data.
         for (int index = 0; index < blockId.length; index++) {
@@ -334,6 +352,15 @@ public class MCEditSchematicFormat implements ISchematicReader {
                     id = id | (short) ((blockIdEx[exIndex] & 0x0F) << 8);
                 } else {
                     id = id | (short) ((blockIdEx[exIndex] & 0xF0) << 4);
+                }
+            }
+
+            // NotEnoughIDs AddBlocks2: block ID bits 12-15
+            if (blockIdEx2 != null && exIndex < blockIdEx2.length) {
+                if ((index & 1) == 0) {
+                    id = id | ((blockIdEx2[exIndex] & 0x0F) << 12);
+                } else {
+                    id = id | ((blockIdEx2[exIndex] & 0xF0) << 8);
                 }
             }
 

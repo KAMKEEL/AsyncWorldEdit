@@ -64,7 +64,9 @@ public class SchematicData {
     private final BlockVector m_origin;
     private byte[] m_blocks;
     private byte[] m_blocksAdd;
+    private byte[] m_blocksAdd2;
     private byte[] m_data;
+    private byte[] m_dataAdd;
     private Tag[] m_tileEntities;
     private Tag[] m_entities;
 
@@ -92,8 +94,18 @@ public class SchematicData {
         return m_blocksAdd;
     }
 
+    /** NotEnoughIDs block ID bits 12-15 (AddBlocks2). */
+    public byte[] getBlocksAdd2() {
+        return m_blocksAdd2;
+    }
+
     public byte[] getData() {
         return m_data;
+    }
+
+    /** Extended data value bits 8-15 (AddData). */
+    public byte[] getDataAdd() {
+        return m_dataAdd;
     }
 
     public Tag[] getTileEntities() {
@@ -133,11 +145,27 @@ public class SchematicData {
         m_blocksAdd = blocksAdd;
     }
 
+    /** NotEnoughIDs block ID bits 12-15 (AddBlocks2). */
+    public void setBlocksEx2(byte[] blocksAdd2) {
+        if (blocksAdd2 == null) {
+            blocksAdd2 = new byte[0];
+        }
+        m_blocksAdd2 = blocksAdd2;
+    }
+
     public void setData(byte[] data) {
         if (data == null) {
             data = new byte[0];
         }
         m_data = data;
+    }
+
+    /** Extended data value bits 8-15 (AddData). */
+    public void setDataAdd(byte[] dataAdd) {
+        if (dataAdd == null) {
+            dataAdd = new byte[0];
+        }
+        m_dataAdd = dataAdd;
     }
 
     public void setTileEntities(List<Tag> tileEntities) {

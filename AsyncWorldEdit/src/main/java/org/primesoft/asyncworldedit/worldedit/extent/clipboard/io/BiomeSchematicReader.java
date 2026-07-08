@@ -210,6 +210,8 @@ public class BiomeSchematicReader implements ClipboardReader {
             final Vector min,
             final int width, final int height, final int length) throws IOException {
         final byte[] blockData = NbtHelper.getByteArray(schematic, FormatSchematic.TAG_BLOCKS_DATA);
+        // NotEnoughIDs AddData: data value bits 8-15
+        final byte[] blockDataAdd = NbtHelper.getByteArray(schematic, "AddData", null);
         final short[] blocks = loadBlockIds(schematic);
         final Map<BlockVector, Map<String, Tag>> tileEntitiesMap = loadTileEntities(schematic);
 
@@ -218,7 +220,14 @@ public class BiomeSchematicReader implements ClipboardReader {
                 for (int z = 0; z < length; ++z) {
                     int index = y * width * length + z * width + x;
                     BlockVector pt = new BlockVector(x, y, z);
-                    BaseBlock block = new BaseBlock(blocks[index], blockData[index]);
+
+                    // Unsigned data byte plus optional AddData high bits (NEID)
+                    int dataValue = blockData[index] & 0xFF;
+                    if (blockDataAdd != null && index < blockDataAdd.length) {
+                        dataValue |= (blockDataAdd[index] & 0xFF) << 8;
+                    }
+
+                    BaseBlock block = new BaseBlock(blocks[index] & 0xFFFF, dataValue);
 
                     if (tileEntitiesMap.containsKey(pt)) {
                         block.setNbtData(new CompoundTag(tileEntitiesMap.get(pt)));
@@ -244,30 +253,45 @@ public class BiomeSchematicReader implements ClipboardReader {
         // Get blocks
         final byte[] blockId = NbtHelper.getByteArray(schematic, FormatSchematic.TAG_BLOCKS_ID);
         final byte[] blockIdEx = NbtHelper.getByteArray(schematic, FormatSchematic.TAG_BLOCKS_IDEX, new byte[0]);
+        // NotEnoughIDs AddBlocks2: block ID bits 12-15
+        final byte[] blockIdEx2 = NbtHelper.getByteArray(schematic, "AddBlocks2", new byte[0]);
 
-        return combineIds(blockId, blockIdEx);
+        return combineIds(blockId, blockIdEx, blockIdEx2);
     }
 
     /**
-     * Combine ID and extended ID
+     * Combine ID, extended ID and NotEnoughIDs extended ID
      *
      * @param blockId
      * @param blockIdEx
+     * @param blockIdEx2
      * @return
      */
-    private short[] combineIds(byte[] blockId, byte[] blockIdEx) {
+    private short[] combineIds(byte[] blockId, byte[] blockIdEx, byte[] blockIdEx2) {
         final short[] result = new short[blockId.length];
 
         for (int index = 0; index < blockId.length; index++) {
+            int id;
             if ((index >> 1) >= blockIdEx.length) {
-                result[index] = (short) (blockId[index] & 0xFF);
+                id = blockId[index] & 0xFF;
             } else {
                 if ((index & 1) == 0) {
-                    result[index] = (short) (((blockIdEx[index >> 1] & 0x0F) << 8) + (blockId[index] & 0xFF));
+                    id = ((blockIdEx[index >> 1] & 0x0F) << 8) + (blockId[index] & 0xFF);
                 } else {
-                    result[index] = (short) (((blockIdEx[index >> 1] & 0xF0) << 4) + (blockId[index] & 0xFF));
+                    id = ((blockIdEx[index >> 1] & 0xF0) << 4) + (blockId[index] & 0xFF);
                 }
             }
+
+            // NotEnoughIDs AddBlocks2: block ID bits 12-15
+            if ((index >> 1) < blockIdEx2.length) {
+                if ((index & 1) == 0) {
+                    id = id | ((blockIdEx2[index >> 1] & 0x0F) << 12);
+                } else {
+                    id = id | ((blockIdEx2[index >> 1] & 0xF0) << 8);
+                }
+            }
+
+            result[index] = (short) id;
         }
 
         return result;

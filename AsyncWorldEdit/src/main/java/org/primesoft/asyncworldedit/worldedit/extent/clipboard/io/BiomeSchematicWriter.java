@@ -230,7 +230,9 @@ public class BiomeSchematicWriter implements ClipboardWriter {
             Vector min, int w, int h, int l) {
         byte[] blockIds = new byte[w * h * l];
         byte[] blockIdsAdd = null;
+        byte[] blockIdsAdd2 = null;
         byte[] blockData = new byte[w * h * l];
+        byte[] blockDataAdd = null;
         List<Tag> tileEntities = new ArrayList<Tag>();
 
         final Region region = clipboard.getRegion();
@@ -253,6 +255,26 @@ public class BiomeSchematicWriter implements ClipboardWriter {
                 blockIdsAdd[index >> 1] = (byte) (((index & 1) == 0)
                         ? blockIdsAdd[index >> 1] & 0xF0 | (block.getType() >> 8) & 0xF
                         : blockIdsAdd[index >> 1] & 0xF | ((block.getType() >> 8) & 0xF) << 4);
+            }
+
+            // NotEnoughIDs: save block ID bits 12-15 in an AddBlocks2 section
+            if (block.getType() > 4095) {
+                if (blockIdsAdd2 == null) { // Lazily create section
+                    blockIdsAdd2 = new byte[(blockIds.length >> 1) + 1];
+                }
+
+                blockIdsAdd2[index >> 1] = (byte) (((index & 1) == 0)
+                        ? blockIdsAdd2[index >> 1] & 0xF0 | (block.getType() >> 12) & 0xF
+                        : blockIdsAdd2[index >> 1] & 0xF | ((block.getType() >> 12) & 0xF) << 4);
+            }
+
+            // NotEnoughIDs: save data value bits 8-15 in an AddData section
+            if (block.getData() > 15) {
+                if (blockDataAdd == null) { // Lazily create section
+                    blockDataAdd = new byte[blockIds.length];
+                }
+
+                blockDataAdd[index] = (byte) ((block.getData() >> 8) & 0xFF);
             }
 
             blockIds[index] = (byte) block.getType();
@@ -282,6 +304,14 @@ public class BiomeSchematicWriter implements ClipboardWriter {
 
         if (blockIdsAdd != null) {
             root.put(FormatSchematic.TAG_BLOCKS_IDEX, new ByteArrayTag(blockIdsAdd));
+        }
+
+        if (blockIdsAdd2 != null) {
+            root.put("AddBlocks2", new ByteArrayTag(blockIdsAdd2));
+        }
+
+        if (blockDataAdd != null) {
+            root.put("AddData", new ByteArrayTag(blockDataAdd));
         }
     }
 
