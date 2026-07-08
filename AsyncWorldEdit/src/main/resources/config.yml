@@ -12,6 +12,14 @@ awe:
     queue-max-size-hard: 10000000
     #maximum number of blocks on the global queue before unlocing it
     queue-max-size-soft: 5000000
+    #TPS the adaptive block placer budget tries to keep the server at
+    adaptive-target-tps: 18
+    #time (in ms) the block placer may spend per run when the server is at the target TPS
+    adaptive-base-budget-ms: 20
+    #extra time (in ms) the block placer may use when the server is otherwise idle (20 TPS)
+    adaptive-idle-extra-ms: 30
+    #minimum time (in ms) the block placer always gets, even when the server is lagging
+    adaptive-min-budget-ms: 2
   memory:
     #minumum free memory (in kilobytes)
     #When the server memory runs below this value all operations are going to cancel

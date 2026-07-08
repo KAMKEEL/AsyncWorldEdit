@@ -190,7 +190,17 @@ public class BlockPlacer implements IBlockPlacer {
      * The blocks placer interval
      */
     private long m_interval;
-    
+
+    /**
+     * Number of placer run timestamps used for the TPS estimate
+     */
+    private static final int TPS_WINDOW_SIZE = 20;
+
+    /**
+     * The adaptive per-run time budget
+     */
+    private AdaptiveTickBudget m_tickBudget;
+
     /**
      * Is the blocks placer paused
      *
@@ -263,6 +273,10 @@ public class BlockPlacer implements IBlockPlacer {
         }
 
         m_interval = interval;
+        m_tickBudget = new AdaptiveTickBudget(rConfig.getAdaptiveTargetTps(),
+                rConfig.getAdaptiveBaseBudgetMs(), rConfig.getAdaptiveIdleExtraMs(),
+                rConfig.getAdaptiveMinBudgetMs(),
+                Math.max(1, interval), TPS_WINDOW_SIZE);
         m_task = new BlockPlacerTask(m_scheduler, m_interval) {
             @Override
             public void run(BlockPlacerTask task) {
@@ -311,6 +325,9 @@ public class BlockPlacer implements IBlockPlacer {
     private void run(BlockPlacerTask task) {
         long enterFunctionTime = System.currentTimeMillis();
         final long timeDelte = enterFunctionTime - m_lastRunTime;
+
+        //Feed the tick budget even when paused so the TPS estimate stays fresh
+        m_tickBudget.onTickStart(System.nanoTime());
 
         if (isPaused()) {
             m_lastRunTime = enterFunctionTime;
@@ -429,11 +446,13 @@ public class BlockPlacer implements IBlockPlacer {
      * @param jobsToCancel canceled blocks
      */
     private boolean processQueue(final List<BlockPlacerGroup> groups,
-            final HashMap<IPlayerEntry, Integer> blocksPlaced, final List<IJobEntry> jobsToCancel) {        
+            final HashMap<IPlayerEntry, Integer> blocksPlaced, final List<IJobEntry> jobsToCancel) {
         long startTime = System.currentTimeMillis();
+        final long startNanos = System.nanoTime();
         int blocks = 0;
-        
+
         boolean demanding = false;
+        boolean budgetExceeded = false;
 
         int pos = 0;
         while (!groups.isEmpty()) {
@@ -458,6 +477,11 @@ public class BlockPlacer implements IBlockPlacer {
                 
                 if (isDemanding) {
                     groups.clear();
+                } else if (!m_tickBudget.shouldContinue(System.nanoTime() - startNanos)) {
+                    //The adaptive time budget for this run is used up,
+                    //stop draining the queues until the next run
+                    budgetExceeded = true;
+                    break;
                 } else if ((maxTime != -1 && (System.currentTimeMillis() - startTime) >= maxTime) ||
                         (maxBlocksCount != -1 && blocks > maxBlocksCount))
                 {
@@ -472,8 +496,10 @@ public class BlockPlacer implements IBlockPlacer {
         }
 
         if (ConfigProvider.messages().isDebugOn()) {
-            log(String.format("[BP RUN] Blocks: %d\tTime: %d\tDemanding: %s",
-                    blocks, (System.currentTimeMillis() - startTime), demanding ? "Y" : "N"));
+            log(String.format("[BP RUN] Blocks: %d\tTime: %d\tDemanding: %s\tTPS: %.1f\tBudget: %dms%s",
+                    blocks, (System.currentTimeMillis() - startTime), demanding ? "Y" : "N",
+                    m_tickBudget.getTpsEstimate(), m_tickBudget.getBudgetNanos() / 1000000,
+                    budgetExceeded ? " (exceeded)" : ""));
         }
         return blocks > 0;
     }

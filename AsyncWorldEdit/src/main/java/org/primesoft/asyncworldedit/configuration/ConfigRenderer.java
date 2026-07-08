@@ -66,6 +66,14 @@ public class ConfigRenderer {
 
     private final int m_cooldown;
 
+    private final int m_adaptiveTargetTps;
+
+    private final int m_adaptiveBaseBudgetMs;
+
+    private final int m_adaptiveIdleExtraMs;
+
+    private final int m_adaptiveMinBudgetMs;
+
     /**
      * Get maximum size of the queue
      *
@@ -96,6 +104,42 @@ public class ConfigRenderer {
         return m_cooldown;
     }
 
+    /**
+     * The TPS the adaptive block placer budget tries to keep the server at
+     *
+     * @return
+     */
+    public int getAdaptiveTargetTps() {
+        return m_adaptiveTargetTps;
+    }
+
+    /**
+     * Time (in ms) the block placer is allowed to use per run at healthy TPS
+     *
+     * @return
+     */
+    public int getAdaptiveBaseBudgetMs() {
+        return m_adaptiveBaseBudgetMs;
+    }
+
+    /**
+     * Extra time (in ms) the block placer may use when the server is idle
+     *
+     * @return
+     */
+    public int getAdaptiveIdleExtraMs() {
+        return m_adaptiveIdleExtraMs;
+    }
+
+    /**
+     * Minimum time (in ms) the block placer always gets, even under heavy lag
+     *
+     * @return
+     */
+    public int getAdaptiveMinBudgetMs() {
+        return m_adaptiveMinBudgetMs;
+    }
+
     public ConfigRenderer(IConfigurationSection renderSection) {
         if (renderSection == null) {
             m_interval = 15;
@@ -103,12 +147,20 @@ public class ConfigRenderer {
             m_cooldown = 5 * 1000;
             m_queueMaxSizeHard = 10000000;
             m_queueMaxSizeSoft = 5000000;
+            m_adaptiveTargetTps = 18;
+            m_adaptiveBaseBudgetMs = 20;
+            m_adaptiveIdleExtraMs = 30;
+            m_adaptiveMinBudgetMs = 2;
         } else {
             m_interval = renderSection.getInt("interval", 15);
             m_queueTalkInterval = renderSection.getInt("talk-interval", 10);
             m_cooldown = renderSection.getInt("talk-cooldown", 5) * 1000;
             m_queueMaxSizeHard = renderSection.getInt("queue-max-size-hard", 10000000);
             m_queueMaxSizeSoft = renderSection.getInt("queue-max-size-soft", 5000000);
+            m_adaptiveTargetTps = renderSection.getInt("adaptive-target-tps", 18);
+            m_adaptiveBaseBudgetMs = renderSection.getInt("adaptive-base-budget-ms", 20);
+            m_adaptiveIdleExtraMs = renderSection.getInt("adaptive-idle-extra-ms", 30);
+            m_adaptiveMinBudgetMs = renderSection.getInt("adaptive-min-budget-ms", 2);
 
             if (m_queueMaxSizeHard <= 0) {
                 log("Warinig: Block queue is disabled!");
