@@ -309,13 +309,27 @@ public class ForwardExtentCopy implements Operation {
     }
 
     private void executeWe619(List<? extends Entity> entities) {
+        // isPasteable() only exists on WorldEdit 6.1.9+, invoke it reflectively
+        // so this class compiles and links against WorldEdit 6.1.2. This method
+        // is only called when the we619 check detected the method.
+        final java.lang.reflect.Method isPasteable;
+        try {
+            isPasteable = EntityType.class.getMethod("isPasteable");
+        } catch (NoSuchMethodException ex) {
+            return; // WorldEdit older than 6.1.9, no entity filtering
+        }
+
         // Switch to entities.removeIf after Java 8 cutoff.
         Iterator<? extends Entity> entityIterator = entities.iterator();
         while (entityIterator.hasNext()) {
             EntityType type = entityIterator.next().getFacet(EntityType.class);
 
-            if (type != null && !type.isPasteable()) {
-                entityIterator.remove();
+            try {
+                if (type != null && Boolean.FALSE.equals(isPasteable.invoke(type))) {
+                    entityIterator.remove();
+                }
+            } catch (ReflectiveOperationException ex) {
+                // Unable to determine, keep the entity
             }
         }
     }

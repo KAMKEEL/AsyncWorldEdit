@@ -209,106 +209,9 @@ public abstract class Loader extends ClassLoader implements ILibraryLoader {
                 return cls;
             }
 
-            InputStream is = getResourceStream(fileName);
-            if (is == null) {
-                cls = super.loadClass(name, resolve);
-                return cls;
-            }
-
-            byte[] data = readFully(is);
-            SecretKeySpec key = m_key;
-            if (key == null) {
-                try {
-                    String aes = "AES cipher here";
-                    String pub = "PUB Key 1"
-                            + "PUB Key 2"
-                            + "PUB Key 3"
-                            + "PUB Key 4"
-                            + "PUB Key 5";
-                    int len = pub.length() / 5;
-                    int pos = pub.indexOf('=');
-                    String part1 = pub.substring(len * 0, len * 1);
-                    String part2 = pub.substring(len * 1, len * 2);
-                    String part3 = pub.substring(len * 2, len * 3);
-                    String part4 = pub.substring(len * 3, len * 4);
-                    String part5 = pos < 0 ? "" : pub.substring(len * 4, pos);
-
-                    boolean hasMatch = true;
-                    int iMatch = 0;
-                    int iSkip = 0;
-
-                    for (int match = 1; match < len && hasMatch; match++) {
-                        final String toMatch = part1.substring(len - match);
-
-                        hasMatch = false;
-                        for (int skip = iSkip; skip < len - match; skip++) {
-                            final String txt = part2.substring(len - match - skip, len - skip);
-
-                            if (txt.equals(toMatch)) {
-                                hasMatch = true;
-                                iMatch = match;
-                                iSkip = skip;
-                                break;
-                            }
-                        }
-                    }
-
-                    String sSkip = part2.substring(len - iSkip);
-                    String sUser = part1.substring(len - iMatch);
-
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(part1.replaceAll(sUser, "").replaceAll(sSkip, ""));
-                    sb.append(part2.replaceAll(sUser, "").replaceAll(sSkip, ""));
-                    sb.append(part3.replaceAll(sUser, "").replaceAll(sSkip, ""));
-                    sb.append(part4.replaceAll(sUser, "").replaceAll(sSkip, ""));
-                    sb.append(part5.replaceAll(sUser, "").replaceAll(sSkip, ""));
-
-                    KeyFactory factory = KeyFactory.getInstance("RSA");                    
-                    PublicKey publicKey = factory.generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(sb.toString())));
-
-                    Cipher cipher = Cipher.getInstance("RSA");
-                    cipher.init(Cipher.DECRYPT_MODE, publicKey);
-
-                    byte[] keyData = cipher.doFinal(Base64.getDecoder().decode(aes));
-                    byte[] aesKey = new byte[keyData.length / 2];
-                    for (int i = 0; i < aesKey.length; i++) {
-                        aesKey[i] = (byte) (keyData[i * 2 + 0] ^ keyData[i * 2 + 1]);
-                    }
-                    m_key = new SecretKeySpec(aesKey, "AES");
-                } catch (NoSuchAlgorithmException ex) {                    
-                    return null;
-                } catch (InvalidKeySpecException ex) {
-                    return null;
-                } catch (NoSuchPaddingException ex) {
-                    return null;
-                } catch (InvalidKeyException ex) {
-                    return null;
-                } catch (IllegalBlockSizeException ex) {
-                    return null;
-                } catch (BadPaddingException ex) {
-                    return null;
-                }
-
-                key = m_key;
-            }
-
-            if (data == null) {
-                return null;
-            }
-
-            try {
-                Cipher cipher = Cipher.getInstance("AES");
-                cipher.init(Cipher.DECRYPT_MODE, key);
-
-                data = cipher.doFinal(data);
-            } catch (NoSuchAlgorithmException ex) {
-            } catch (NoSuchPaddingException ex) {
-            } catch (InvalidKeyException ex) {
-            } catch (IllegalBlockSizeException ex) {
-            } catch (BadPaddingException ex) {
-            }
-
-            cls = super.defineClass(name, data, 0, data.length);
+            // PLUG PATCH: this is an open (unencrypted) build, all classes are on
+            // the plain classpath. The premium payload decryption is not used.
+            cls = super.loadClass(name, resolve);
             return cls;
         } finally {
             if (cls != null) {
@@ -467,68 +370,9 @@ public abstract class Loader extends ClassLoader implements ILibraryLoader {
     }
 
     private InputStream getResourceStream(final String fileName) {
-        byte[] xor = m_seed;
-
-        if (xor == null) {
-            String seed = "Name seed 1"
-                    + "Name seed 2";
-            String part1 = seed.substring(0, seed.length() / 2);
-            String part2 = seed.substring(seed.length() / 2, seed.indexOf('='));
-            int part1l = part1.length();
-            int part2l = part2.length();
-
-            if (part1l < 5 || part2l < 5) {
-                return null;
-            }
-            
-            boolean hasMatch = true;
-            int iMatch = 0;
-            int iSkip = 0;
-
-            for (int match = 1; match < part2l && hasMatch; match++) {
-                final String toMatch = part2.substring(part2l - match);
-
-                hasMatch = false;
-                for (int skip = iSkip; skip < part1l - match; skip++) {
-                    final String txt = part1.substring(part1l - match - skip, part1l - skip);
-
-                    if (txt.equals(toMatch)) {
-                        hasMatch = true;
-                        iMatch = match;
-                        iSkip = skip;
-                        break;
-                    }
-                }
-            }
-
-            seed = String.format("%1$s%2$s%3$s",
-                    part1.substring(0, part1l - iSkip - iMatch),
-                    part2.substring(0, part2l - iMatch).replaceFirst(part1.substring(part1l - iSkip), ""),
-                    seed.substring(seed.indexOf('='))
-            );
-            m_seed = Base64.getDecoder().decode(seed);
-            if (m_seed.length < 2) {
-                return null;
-            }
-            xor = m_seed;
-        }
-
-        byte[] bFileName = fileName.getBytes(UTF8);
-        for (int i = 0; i < bFileName.length; i++) {
-            bFileName[i] = (byte) (bFileName[i] ^ xor[i % xor.length]);
-        }
-
-        StringBuilder sb = new StringBuilder();
-        StringBuilder result = new StringBuilder();
-
-        result.append("/res");
-        String base64Name = Base64.getEncoder().encodeToString(m_sha.digest(bFileName)).replace('+', '-').replace('/', '_');
-        sb.append(base64Name);
-
-        result.append("/");
-        result.append(sb);
-
-        return m_thisClass.getResourceAsStream(result.toString());
+        // PLUG PATCH: this is an open (unencrypted) build, resources such as the
+        // injector jar live at their plain paths inside the plugin jar.
+        return m_thisClass.getResourceAsStream("/" + fileName);
     }
 
     /**

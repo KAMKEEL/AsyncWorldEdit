@@ -979,9 +979,17 @@ public class EditSession implements Extent {
         Region centerRegion = new CuboidRegion(
                 getWorld(), // Causes clamping of Y range
                 new Vector(((int) center.getX()), ((int) center.getY()), ((int) center.getZ())),
-                new Vector(MathUtils.roundHalfUp(center.getX()),
-                            center.getY(), MathUtils.roundHalfUp(center.getZ())));
+                new Vector(roundHalfUp(center.getX()),
+                            center.getY(), roundHalfUp(center.getZ())));
         return setBlocks(centerRegion, pattern);
+    }
+
+    /**
+     * Round half up, matching MathUtils.roundHalfUp introduced in WorldEdit
+     * 6.1.9. Inlined so this class compiles and links against WorldEdit 6.1.2.
+     */
+    private static double roundHalfUp(double value) {
+        return value >= 0 ? Math.floor(value + 0.5d) : Math.ceil(value - 0.5d);
     }
 
     /**
