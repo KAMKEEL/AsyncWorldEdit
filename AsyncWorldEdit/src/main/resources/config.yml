@@ -20,6 +20,16 @@ awe:
     adaptive-idle-extra-ms: 30
     #minimum time (in ms) the block placer always gets, even when the server is lagging
     adaptive-min-budget-ms: 2
+    #direct chunk block placement: queued plain blocks (no NBT) are grouped per chunk
+    #and written straight into the chunk sections, followed by one chunk refresh packet,
+    #instead of being placed one by one through the Bukkit API
+    direct-chunk:
+      #enable the direct chunk placement; when the server chunk layout is not
+      #recognized AWE automatically falls back to the classic per block placement
+      enabled: true
+      #minimum number of blocks queued for a single chunk in one placer run before
+      #the direct chunk path is used; smaller batches use the classic path
+      minimum-blocks-per-chunk: 64
   memory:
     #minumum free memory (in kilobytes)
     #When the server memory runs below this value all operations are going to cancel

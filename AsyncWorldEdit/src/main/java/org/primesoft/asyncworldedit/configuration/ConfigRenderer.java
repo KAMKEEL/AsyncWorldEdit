@@ -74,6 +74,10 @@ public class ConfigRenderer {
 
     private final int m_adaptiveMinBudgetMs;
 
+    private final boolean m_directChunkEnabled;
+
+    private final int m_directChunkMinBlocksPerChunk;
+
     /**
      * Get maximum size of the queue
      *
@@ -140,6 +144,26 @@ public class ConfigRenderer {
         return m_adaptiveMinBudgetMs;
     }
 
+    /**
+     * Is the direct chunk block placement (chunk batched section writes)
+     * enabled
+     *
+     * @return
+     */
+    public boolean isDirectChunkEnabled() {
+        return m_directChunkEnabled;
+    }
+
+    /**
+     * Minimum number of blocks queued for a single chunk in one placer run
+     * before the direct chunk path is used
+     *
+     * @return
+     */
+    public int getDirectChunkMinBlocksPerChunk() {
+        return m_directChunkMinBlocksPerChunk;
+    }
+
     public ConfigRenderer(IConfigurationSection renderSection) {
         if (renderSection == null) {
             m_interval = 15;
@@ -151,6 +175,8 @@ public class ConfigRenderer {
             m_adaptiveBaseBudgetMs = 20;
             m_adaptiveIdleExtraMs = 30;
             m_adaptiveMinBudgetMs = 2;
+            m_directChunkEnabled = true;
+            m_directChunkMinBlocksPerChunk = 64;
         } else {
             m_interval = renderSection.getInt("interval", 15);
             m_queueTalkInterval = renderSection.getInt("talk-interval", 10);
@@ -161,6 +187,8 @@ public class ConfigRenderer {
             m_adaptiveBaseBudgetMs = renderSection.getInt("adaptive-base-budget-ms", 20);
             m_adaptiveIdleExtraMs = renderSection.getInt("adaptive-idle-extra-ms", 30);
             m_adaptiveMinBudgetMs = renderSection.getInt("adaptive-min-budget-ms", 2);
+            m_directChunkEnabled = renderSection.getBoolean("direct-chunk.enabled", true);
+            m_directChunkMinBlocksPerChunk = renderSection.getInt("direct-chunk.minimum-blocks-per-chunk", 64);
 
             if (m_queueMaxSizeHard <= 0) {
                 log("Warinig: Block queue is disabled!");

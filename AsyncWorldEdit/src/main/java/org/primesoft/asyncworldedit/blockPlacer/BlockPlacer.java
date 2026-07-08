@@ -75,6 +75,7 @@ import org.primesoft.asyncworldedit.api.taskdispatcher.ITaskDispatcher;
 import org.primesoft.asyncworldedit.api.utils.IAsyncCommand;
 import org.primesoft.asyncworldedit.api.worldedit.ICancelabeEditSession;
 import org.primesoft.asyncworldedit.api.worldedit.IThreadSafeEditSession;
+import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.configuration.ConfigMemory;
 import org.primesoft.asyncworldedit.configuration.ConfigRenderer;
 import org.primesoft.asyncworldedit.core.AwePlatform;
@@ -272,6 +273,9 @@ public class BlockPlacer implements IBlockPlacer {
             m_task.queueStop();
         }
 
+        ChunkBatchWriter.getInstance().configure(rConfig.isDirectChunkEnabled(),
+                rConfig.getDirectChunkMinBlocksPerChunk());
+
         m_interval = interval;
         m_tickBudget = new AdaptiveTickBudget(rConfig.getAdaptiveTargetTps(),
                 rConfig.getAdaptiveBaseBudgetMs(), rConfig.getAdaptiveIdleExtraMs(),
@@ -454,45 +458,58 @@ public class BlockPlacer implements IBlockPlacer {
         boolean demanding = false;
         boolean budgetExceeded = false;
 
-        int pos = 0;
-        while (!groups.isEmpty()) {
-            BlockPlacerGroup group = groups.get(pos);
-            int maxTime = group.getRendererTime();
-            int maxBlocksCount = group.getRendererBlocks();
-            
-            IBlockPlacerEntry entry;
-            synchronized (m_mutex) {
-                entry = fetchEntry(group, blocksPlaced, jobsToCancel);
-            }
+        final ChunkBatchWriter batchWriter = ChunkBatchWriter.getInstance();
+        batchWriter.openWindow();
+        try {
+            int pos = 0;
+            while (!groups.isEmpty()) {
+                BlockPlacerGroup group = groups.get(pos);
+                int maxTime = group.getRendererTime();
+                int maxBlocksCount = group.getRendererBlocks();
 
-            if (entry == null) {
-                groups.remove(group);
-            } else {
-                entry.process(this);
-                blocks++;
-                
-                
-                boolean isDemanding = entry.isDemanding();
-                demanding |= isDemanding;
-                
-                if (isDemanding) {
-                    groups.clear();
-                } else if (!m_tickBudget.shouldContinue(System.nanoTime() - startNanos)) {
-                    //The adaptive time budget for this run is used up,
-                    //stop draining the queues until the next run
-                    budgetExceeded = true;
-                    break;
-                } else if ((maxTime != -1 && (System.currentTimeMillis() - startTime) >= maxTime) ||
-                        (maxBlocksCount != -1 && blocks > maxBlocksCount))
-                {
+                IBlockPlacerEntry entry;
+                synchronized (m_mutex) {
+                    entry = fetchEntry(group, blocksPlaced, jobsToCancel);
+                }
+
+                if (entry == null) {
                     groups.remove(group);
+                } else {
+                    if (entry.isDemanding()) {
+                        //Demanding entries (i.e. chunk regeneration) must see
+                        //the world with all batched blocks applied
+                        batchWriter.flush();
+                    }
+
+                    entry.process(this);
+                    blocks++;
+
+
+                    boolean isDemanding = entry.isDemanding();
+                    demanding |= isDemanding;
+
+                    if (isDemanding) {
+                        groups.clear();
+                    } else if (!m_tickBudget.shouldContinue(System.nanoTime() - startNanos)) {
+                        //The adaptive time budget for this run is used up,
+                        //stop draining the queues until the next run
+                        budgetExceeded = true;
+                        break;
+                    } else if ((maxTime != -1 && (System.currentTimeMillis() - startTime) >= maxTime) ||
+                            (maxBlocksCount != -1 && blocks > maxBlocksCount))
+                    {
+                        groups.remove(group);
+                    }
+                }
+
+                pos = pos + 1;
+                if (pos >= groups.size()) {
+                    pos = 0;
                 }
             }
-            
-            pos = pos + 1;
-            if (pos >= groups.size()) {
-                pos = 0;
-            }
+        } finally {
+            //Write all batched blocks in this run (direct chunk placement)
+            batchWriter.closeWindow();
         }
 
         if (ConfigProvider.messages().isDebugOn()) {

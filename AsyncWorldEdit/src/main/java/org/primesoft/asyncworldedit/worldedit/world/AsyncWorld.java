@@ -91,6 +91,7 @@ import org.primesoft.asyncworldedit.blockPlacer.entries.WorldFuncEntryEx;
 import org.primesoft.asyncworldedit.api.utils.IAction;
 import org.primesoft.asyncworldedit.api.utils.IFunc;
 import org.primesoft.asyncworldedit.api.utils.IFuncEx;
+import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.utils.MutexProvider;
 import org.primesoft.asyncworldedit.worldedit.AsyncEditSession;
 import org.primesoft.asyncworldedit.worldedit.CancelabeEditSession;
@@ -303,17 +304,19 @@ public class AsyncWorld extends AbstractWorldWrapper {
         IFuncEx<Boolean, WorldEditException> func = new IFuncEx<Boolean, WorldEditException>() {
             @Override
             public Boolean execute() throws WorldEditException {
-                final BaseBlock oldBlock = m_parent.getBlock(v);
+                final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
+                final BaseBlock oldBlock = batcher.getBlock(m_parent, m_bukkitWorld, v);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, newBlock)
                         || isSame(oldBlock, newBlock)) {
                     return false;
                 }
-                
-                final boolean result = m_parent.setBlock(v, newBlock, bln);
+
+                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, bln)
+                        || m_parent.setBlock(v, newBlock, bln);
                 if (result) {
                     logBlock(v, player, oldBlock, newBlock);
                 }
-                
+
                 return result;
             }
         };
@@ -339,18 +342,20 @@ public class AsyncWorld extends AbstractWorldWrapper {
         IFunc<Boolean> func = new IFunc<Boolean>() {
             @Override
             public Boolean execute() {
-                final BaseBlock oldBlock = m_parent.getBlock(v);
+                final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
+                final BaseBlock oldBlock = batcher.getBlock(m_parent, m_bukkitWorld, v);
                 final BaseBlock newBlock = new BaseBlock(i, oldBlock.getData());
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, newBlock)
                         || isSame(oldBlock, newBlock)) {
                     return false;
                 }
-                
-                final boolean result = m_parent.setBlockType(v, i);
+
+                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)
+                        || m_parent.setBlockType(v, i);
                 if (result) {
                     logBlock(v, player, oldBlock, newBlock);
                 }
-                
+
                 return result;
             }
         };
@@ -376,14 +381,17 @@ public class AsyncWorld extends AbstractWorldWrapper {
         IFunc<Boolean> func = new IFunc<Boolean>() {
             @Override
             public Boolean execute() {
-                final BaseBlock oldBlock = m_parent.getBlock(v);
+                final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
+                final BaseBlock oldBlock = batcher.getBlock(m_parent, m_bukkitWorld, v);
                 final BaseBlock newBlock = new BaseBlock(oldBlock.getType(), i);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, newBlock)
                         || isSame(oldBlock, newBlock)) {
                     return false;
                 }
-                
-                m_parent.setBlockData(v, i);
+
+                if (!batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)) {
+                    m_parent.setBlockData(v, i);
+                }
                 logBlock(v, player, oldBlock, newBlock);
                 return true;
             }
@@ -412,17 +420,19 @@ public class AsyncWorld extends AbstractWorldWrapper {
         IFunc<Boolean> func = new IFunc<Boolean>() {
             @Override
             public Boolean execute() {
-                final BaseBlock oldBlock = m_parent.getBlock(v);
+                final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
+                final BaseBlock oldBlock = batcher.getBlock(m_parent, m_bukkitWorld, v);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, newBlock)
                         || isSame(oldBlock, newBlock)) {
                     return false;
                 }
-                
-                final boolean result = m_parent.setTypeIdAndData(v, i, i1);
+
+                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)
+                        || m_parent.setTypeIdAndData(v, i, i1);
                 if (result) {
                     logBlock(v, player, oldBlock, newBlock);
                 }
-                
+
                 return result;
             }
         };
@@ -620,7 +630,7 @@ public class AsyncWorld extends AbstractWorldWrapper {
             @Override
             public void execute() {
                 BaseBlock air = new BaseBlock(0);
-                BaseBlock oldBlock = m_parent.getBlock(v);
+                BaseBlock oldBlock = ChunkBatchWriter.getInstance().getBlock(m_parent, m_bukkitWorld, v);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, air) || isSame(oldBlock, air)) {
                     return;
                 }
@@ -990,7 +1000,7 @@ public class AsyncWorld extends AbstractWorldWrapper {
             @Override
             public Boolean execute() {
                 BaseBlock air = new BaseBlock(0);
-                BaseBlock oldBlock = m_parent.getBlock(v);
+                BaseBlock oldBlock = ChunkBatchWriter.getInstance().getBlock(m_parent, m_bukkitWorld, v);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, air) || isSame(oldBlock, air)) {
                     return false;
                 }
@@ -1064,17 +1074,19 @@ public class AsyncWorld extends AbstractWorldWrapper {
             
             @Override
             public Boolean execute() throws WorldEditException {
-                final BaseBlock oldBlock = m_parent.getBlock(v);
+                final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
+                final BaseBlock oldBlock = batcher.getBlock(m_parent, m_bukkitWorld, v);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, newBlock)
                         || isSame(oldBlock, newBlock)) {
                     return false;
                 }
-                
-                final boolean result = m_parent.setBlock(vector, newBlock);
+
+                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)
+                        || m_parent.setBlock(vector, newBlock);
                 if (result) {
                     logBlock(vector, player, oldBlock, newBlock);
                 }
-                
+
                 return result;
             }
         };
