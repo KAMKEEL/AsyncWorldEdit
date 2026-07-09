@@ -186,6 +186,28 @@ assumption, proven in-game). Two findings, both fixed:
    with thin slices (packet + relight each). Eviction now drains to
    HALF the window (hysteresis) for rarer, larger passes.
 
+### Phase 1 gate run #2 (2026-07-10) - PASSED
+
+Same warm 1.13M-block //set on the hysteresis + slimmed-hot-path build:
+
+| Engine   | blocks/sec | minTPS | heap-delta | notes |
+|----------|-----------|--------|------------|-------|
+| buffered | 162,277   | 19.7   | +614MB*    | streamed; cold run 103.5k/5.7 (probe+JIT) |
+| classic  | 112,985   | 19.6   | +669MB     | first classic run 103.9k, minTPS 18.0, budget-exceeded=9 |
+
+*server-global peak-minus-start; the other buffered run read +82MB -
+GC-timing noise, the real memory story lands with Phase 3.
+
+Gate criteria: same-or-better blocks/sec vs the 160,455 baseline - MET
+(162.3k). minTPS 19.7 vs 19.4 - MET. sections-live bounded - MET,
+peaked at 192/1024 (6 MB) and never even reached the 256 window:
+staleness alone kept pace with the producer, streaming ~8 completed
+chunk columns (~142k blocks) per second about 2s behind the sweep;
+window-evict stayed 0 (the watermark is the safety net for jobs wider
+than staleness can drain). Job-end tail was 16-24 chunks. //undo
+replayed progressively with a clean log. Phases 1-2 are proven
+in-game; Phase 3 (columnar undo) is unlocked per the sequencing rule.
+
 ## Phase 2 - Columnar reads (kill the read allocator)
 
 - Add a raw read path to the NMS layer: packed (id,data) int straight from
