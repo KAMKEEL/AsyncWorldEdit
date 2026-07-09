@@ -70,6 +70,58 @@ Deliverables: audit findings committed as small focused commits
 ("Remove the dead premium directChunk config section", etc.), no behavior
 changes, suite stays green.
 
+### Phase 0 findings (audited 2026-07-09, suite green at every commit)
+
+1. Double representation - CONFIRMED, documented, stays until Phase 4.
+   In buffered mode ChunkBatchWriter's window batches only main-thread
+   inline writes and classic fallbacks (trySetBlock requires the window
+   thread); all async job writes go straight to JobBufferRegistry. Both
+   pools share the SectionBudget, so memory is bounded once. Unify into
+   one PendingChunk pool in Phase 4 if Phases 1-3 leave the window path
+   redundant.
+2. awe.directChunk section - REMOVED (dead). AdapterProvider only knows
+   Bukkit 1.8-1.12 spigot adapters, none match the 1.7.10 target and the
+   Deploy assembly bundles none, so getDirectChunkAPI() is always null
+   and every ConfigProvider.directChunk() consumer (DcUtils,
+   BlockReligher, ChunkDataCommon) is unreachable. The section was
+   removed from the bundled config.yml; the ConfigDirectChunkApi parsing
+   stays (missing-section defaults are identical: true/0/-1) because the
+   directChunk classes still compile against it - their deletion is the
+   Phase 4 decision.
+3. DataAsyncParams.extract on the buffered path - AUDITED, fix is
+   Phase 2. Per buffered setBlock AsyncWorld still allocates: two
+   DataAsyncParams wrappers (block + vector extract), the classic-path
+   IFuncEx closure (constructed before the async branch, garbage when
+   the buffer accepts the block), and one BaseBlock via the async
+   pre-check canPlace(..., getBlock(v), ...) - a full world read whose
+   oldBlock argument is unused when BlocksHub access checking is off
+   (the bridge reduces to the disallowedBlocks blacklist, which only
+   looks at the new block). Phase 2 slims this call path: extract once,
+   skip the old-block read when access checking is disabled, build the
+   closure only on the classic route.
+4. [BP RUN] vs [ENGINE] debug channels - CONFIRMED two channels
+   (messages.debug drives [BP RUN], engine.debug drives [ENGINE]).
+   Consolidation under EngineDebug lands in Phase 4 as planned.
+5. undo-spool-threshold-mb - CONFIRMED parsed (ConfigEngine) and unused;
+   reserved key, becomes real in Phase 3 as engine.undo.*. Left as is.
+6. isSame helpers - CONFIRMED no isSame call on the buffered path
+   (bufferBlock documents the intentional drop of the short circuit).
+   Two genuinely dead private overloads were found and removed:
+   AsyncWorld.isSameData(BaseBlock,int) and isSame(BaseBlock,int).
+7. Orphaned keys from earlier trims - the blocksHub isDcEnabled keys
+   (log + access) were pruned from the bundled config.yml: BHLevel.All
+   only differs from Regular on dc=true bridge calls, whose sole call
+   site (BaseWrappedChunk) is unreachable per finding 2, and the bundled
+   values equaled the parse defaults. Every other config key was
+   cross-checked against its parser and every parser getter against its
+   callers: no further orphans (the historical v6->v7 / v17->v18
+   updaters still write the pruned keys when migrating ancient configs;
+   harmless). BHLevel.All and the dc-flagged bridge plumbing die with
+   the directChunk subsystem in Phase 4.
+8. WE-side Vector allocation in region iteration - confirmed upstream of
+   AWE (com.sk89q.worldedit region iterators), out of scope here; noted
+   for the WorldEdit forks.
+
 ## Phase 1 - Region-streamed flushing (progressive placement)
 
 Fixes the observed all-at-once placement, the whole-job peak memory, and
