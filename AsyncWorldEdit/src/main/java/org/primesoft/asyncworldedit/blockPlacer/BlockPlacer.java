@@ -76,6 +76,8 @@ import org.primesoft.asyncworldedit.api.utils.IAsyncCommand;
 import org.primesoft.asyncworldedit.api.worldedit.ICancelabeEditSession;
 import org.primesoft.asyncworldedit.api.worldedit.IThreadSafeEditSession;
 import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
+import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
+import org.primesoft.asyncworldedit.chunkbatch.EngineStats;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
 import org.primesoft.asyncworldedit.configuration.ConfigMemory;
 import org.primesoft.asyncworldedit.configuration.ConfigRenderer;
@@ -604,6 +606,19 @@ public class BlockPlacer implements IBlockPlacer {
                                 blocksPlaced.put(player, blocksPlaced.get(player) + 1);
                             } else {
                                 blocksPlaced.put(player, 1);
+                            }
+
+                            //Per job block tally for the classic engine A/B
+                            //completion line. Only when debug is on and we are
+                            //not the buffered engine (which counts its own
+                            //flushed blocks). Job marker entries are skipped.
+                            if (EngineDebug.isEnabled()
+                                    && !ConfigProvider.isBufferedEngine()
+                                    && !(entry instanceof IJobEntry)) {
+                                IJobEntry owner = playerEntry.getJob(entry.getJobId());
+                                if (owner instanceof JobEntry) {
+                                    ((JobEntry) owner).addBlocksPlaced(1);
+                                }
                             }
                         }
                     } else {
@@ -1221,6 +1236,8 @@ public class BlockPlacer implements IBlockPlacer {
      * @param job
      */
     private void onJobRemoved(IJobEntry job) {
+        logClassicJobDone(job);
+
         synchronized (m_jobAddedListeners) {
             for (IBlockPlacerListener listener : m_jobAddedListeners) {
                 listener.jobRemoved(job);
@@ -1228,6 +1245,33 @@ public class BlockPlacer implements IBlockPlacer {
         }
         
         AwePlatform.getInstance().getCore().getEventBus().post(new JobRemovedEvent(job));
+    }
+
+    /**
+     * Symmetric classic engine per job completion line. Mirrors the buffered
+     * engine line from JobBufferRegistry so an admin can A/B compare timing.
+     * Only emitted in classic mode with engine debug on; the one-shot guard on
+     * the job keeps it to a single line even though onJobRemoved can fire more
+     * than once for the same job (cancel + queue scan + purge). In buffered
+     * mode this stays silent so buffered jobs never double-print - the buffered
+     * drain path in JobBufferRegistry owns that line instead.
+     *
+     * @param job the finished (or canceled) job
+     */
+    private void logClassicJobDone(IJobEntry job) {
+        if (!EngineDebug.isEnabled() || ConfigProvider.isBufferedEngine()) {
+            return;
+        }
+        if (!(job instanceof JobEntry)) {
+            return;
+        }
+        JobEntry jobEntry = (JobEntry) job;
+        if (!jobEntry.claimCompletionLog()) {
+            return;
+        }
+        final long wallMs = System.currentTimeMillis() - jobEntry.getStartMillis();
+        log(EngineStats.classicJobLine(jobEntry.getJobId(),
+                jobEntry.getBlocksPlaced(), wallMs));
     }
 
     /**

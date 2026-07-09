@@ -544,11 +544,8 @@ public final class JobBufferRegistry {
             return;
         }
         final long total = buf.getTotalFlushed();
-        final long wallMs = Math.max(1, System.currentTimeMillis() - buf.getStartMillis());
-        final double perSec = total * 1000.0 / wallMs;
-        log(String.format(
-                "[ENGINE] job %d done: buffered blocks=%d wall=%dms avg=%.0f blocks/sec",
-                buf.getJobId(), total, wallMs, perSec));
+        final long wallMs = System.currentTimeMillis() - buf.getStartMillis();
+        log(EngineStats.bufferedJobLine(buf.getJobId(), total, wallMs));
     }
 
     /**

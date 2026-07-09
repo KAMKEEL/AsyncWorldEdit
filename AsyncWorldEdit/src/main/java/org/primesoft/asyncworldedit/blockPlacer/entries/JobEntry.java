@@ -51,6 +51,8 @@ import com.sk89q.worldedit.util.eventbus.EventBus;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.primesoft.asyncworldedit.api.MessageSystem;
 import org.primesoft.asyncworldedit.api.blockPlacer.IBlockPlacer;
 import org.primesoft.asyncworldedit.blockPlacer.BlockPlacerEntry;
@@ -104,6 +106,61 @@ public class JobEntry extends BlockPlacerEntry implements IJobEntry {
      * The event bus
      */
     private final EventBus m_eventBus;
+
+    /**
+     * Wall clock time (ms) when the job was created, used by the classic
+     * engine completion debug line. Mirrors the buffered engine, which stamps
+     * its start when the first buffered write registers the job.
+     */
+    private final long m_startMillis = System.currentTimeMillis();
+
+    /**
+     * Blocks placed by the classic engine for this job (only incremented when
+     * engine debug is on; the buffered engine keeps its own count).
+     */
+    private final AtomicLong m_blocksPlaced = new AtomicLong();
+
+    /**
+     * Guards the one-shot classic completion debug line so it prints at most
+     * once regardless of how many times the job is removed.
+     */
+    private final AtomicBoolean m_completionLogged = new AtomicBoolean();
+
+    /**
+     * Wall clock time (ms) when this job was created.
+     *
+     * @return the creation timestamp
+     */
+    public long getStartMillis() {
+        return m_startMillis;
+    }
+
+    /**
+     * Record classic engine block placements for this job.
+     *
+     * @param count number of blocks placed
+     */
+    public void addBlocksPlaced(long count) {
+        m_blocksPlaced.addAndGet(count);
+    }
+
+    /**
+     * Total classic engine blocks placed for this job.
+     *
+     * @return the running block count
+     */
+    public long getBlocksPlaced() {
+        return m_blocksPlaced.get();
+    }
+
+    /**
+     * Claim the single classic completion log slot.
+     *
+     * @return true exactly once (for the first caller), false afterwards
+     */
+    public boolean claimCompletionLog() {
+        return m_completionLogged.compareAndSet(false, true);
+    }
 
     /**
      * Get the player UUID
