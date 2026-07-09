@@ -371,4 +371,133 @@ public class NmsChunkWriterTest {
         assertTrue(stale.invalidated);
         assertTrue(map.isEmpty());
     }
+
+    //---------------------------------------------------------------------
+    //Raw packed (id, data) reads straight from the section arrays: the
+    //Phase 2 read seam. Every detected layout must decode exactly what the
+    //write path encodes, without BaseBlock or NBT lookups.
+    //---------------------------------------------------------------------
+    @Test
+    public void rawReadVanillaDecodesMsbAndMeta() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldVanilla.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        NmsProbeTest.FakeSectionVanilla section
+                = new NmsProbeTest.FakeSectionVanilla(64, true);
+        //id 0x123 needs the MSB nibble; metadata 5
+        final int index = SectionMath.sectionIndex(3, 66, 7);
+        section.blockLSBArray[index] = (byte) 0x23;
+        section.blockMSBArray = new NmsProbeTest.FakeNibble(4096, 4);
+        SectionMath.nibbleSet(section.blockMSBArray.data, index, 1);
+        SectionMath.nibbleSet(section.blockMetadataArray.data, index, 5);
+
+        Object[] sections = new Object[16];
+        sections[4] = section;
+
+        int slot = writer.readRawInSections(sections, 3, 66, 7);
+        assertEquals(0x123, SectionMath.slotId(slot));
+        assertEquals(5, SectionMath.slotData(slot));
+
+        //An untouched position of the same section reads plain air
+        int air = writer.readRawInSections(sections, 4, 66, 7);
+        assertEquals(0, SectionMath.slotId(air));
+        assertEquals(0, SectionMath.slotData(air));
+    }
+
+    @Test
+    public void rawReadNeidGtnhDecodesWideIdAndWideMeta() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldNeidGtnh.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        NmsProbeTest.FakeSectionNeidGtnh section
+                = new NmsProbeTest.FakeSectionNeidGtnh(0, true);
+        final int index = SectionMath.sectionIndex(1, 2, 3);
+        //An id above Short.MAX_VALUE must read back unsigned
+        section.block16BArray[index] = (short) 40000;
+        section.block16BMetaArray[index] = 7;
+
+        Object[] sections = new Object[16];
+        sections[0] = section;
+
+        int slot = writer.readRawInSections(sections, 1, 2, 3);
+        assertEquals(40000, SectionMath.slotId(slot));
+        assertEquals(7, SectionMath.slotData(slot));
+    }
+
+    @Test
+    public void rawReadNeidNibbleMetaDecodes() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldNeid.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        NmsProbeTest.FakeSectionNeid section
+                = new NmsProbeTest.FakeSectionNeid(0, true);
+        final int index = SectionMath.sectionIndex(15, 15, 15);
+        section.block16BArray[index] = 4096;
+        SectionMath.nibbleSet(section.blockMetadataArray.data, index, 9);
+
+        Object[] sections = new Object[16];
+        sections[0] = section;
+
+        int slot = writer.readRawInSections(sections, 15, 15, 15);
+        assertEquals(4096, SectionMath.slotId(slot));
+        assertEquals(9, SectionMath.slotData(slot));
+    }
+
+    @Test
+    public void rawReadNullSectionIsAirAndShortArrayMisses() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldVanilla.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        //A missing section is definitively air - a valid raw answer
+        int slot = writer.readRawInSections(new Object[16], 0, 64, 0);
+        assertEquals(0, SectionMath.slotId(slot));
+        assertEquals(0, SectionMath.slotData(slot));
+
+        //A section index beyond the array (cubic-chunks style worlds) is
+        //a miss, never a guess
+        assertEquals(SectionMath.EMPTY_SLOT,
+                writer.readRawInSections(new Object[8], 0, 200, 0));
+    }
+
+    @Test
+    public void rawReadCompactSpigotSectionWithoutExpanding() throws Exception {
+        NmsHandles handles = NmsProbe.probe(FakeCraftWorldSpigotCompact.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        //A fully compacted uniform stone section: the read must decode the
+        //compact bytes WITHOUT materializing the id array (a read must
+        //never mutate the chunk)
+        FakeSectionSpigotCompact section = new FakeSectionSpigotCompact(0, true);
+        section.compactId = 1;
+        section.compactData = 2;
+
+        Object[] sections = new Object[16];
+        sections[0] = section;
+
+        int slot = writer.readRawInSections(sections, 8, 8, 8);
+        assertEquals(1, SectionMath.slotId(slot));
+        assertEquals(2, SectionMath.slotData(slot));
+        assertNull("a raw read must not expand the compact section",
+                section.blockIds);
+    }
+
+    @Test
+    public void rawReadRefusesABadLayoutBeforeTheFirstRead() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldVanilla.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        NmsProbeTest.FakeSectionVanilla section
+                = new NmsProbeTest.FakeSectionVanilla(0, true);
+        section.blockLSBArray = new byte[16];
+
+        Object[] sections = new Object[16];
+        sections[0] = section;
+
+        try {
+            writer.readRawInSections(sections, 0, 0, 0);
+            fail("a wrong section layout must be refused, not decoded");
+        } catch (IllegalStateException ex) {
+            assertTrue(ex.getMessage().contains("section layout mismatch"));
+        }
+    }
 }

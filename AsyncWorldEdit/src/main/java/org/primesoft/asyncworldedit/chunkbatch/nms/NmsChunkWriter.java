@@ -381,6 +381,133 @@ public class NmsChunkWriter {
     }
 
     /**
+     * Raw packed (id, data) read straight from the chunk section arrays of
+     * the detected layout - no BaseBlock, no NBT lookup, no Bukkit block
+     * object. Main thread only (same contract as {@link #apply}).
+     *
+     * Never loads a chunk: an unloaded chunk is a miss and the caller must
+     * use its regular read path. The same layout sanity check as the write
+     * path guards the first live section read.
+     *
+     * Intended consumers (the Phase 2/3 seam): flush-time old-value
+     * capture for the columnar undo and main-thread threshold decisions.
+     * NOT a general world read - it cannot see tile/NBT data, so any
+     * consumer that needs NBT correctness must keep the classic read.
+     *
+     * @param world the Bukkit world
+     * @param x world x
+     * @param y world y
+     * @param z world z
+     * @return the packed slot ({@link SectionMath#slotId} /
+     * {@link SectionMath#slotData}, notify bit always clear), or
+     * {@link SectionMath#EMPTY_SLOT} when the position cannot be read raw
+     * (unloaded chunk, out of range, unexpandable compacted section)
+     * @throws Exception when a reflective access fails; the caller should
+     * fall back to its regular read path
+     */
+    public int readRaw(World world, int x, int y, int z) throws Exception {
+        if (y < 0 || y > 255) {
+            return SectionMath.EMPTY_SLOT;
+        }
+
+        final int cx = SectionMath.blockToChunk(x);
+        final int cz = SectionMath.blockToChunk(z);
+        if (!world.isChunkLoaded(cx, cz)) {
+            return SectionMath.EMPTY_SLOT;
+        }
+
+        final Object handle = m_handles.worldGetHandle.invoke(world);
+        final Object chunk = m_handles.getChunk.invoke(handle, cx, cz);
+        final Object[] sections = (Object[]) m_handles.getSections.invoke(chunk);
+
+        return readRawInSections(sections, x, y, z);
+    }
+
+    /**
+     * The section-level raw read behind {@link #readRaw} (package private
+     * so the layout decoding is testable against the synthetic section
+     * classes without a Bukkit world)
+     */
+    int readRawInSections(Object[] sections, int x, int y, int z) throws Exception {
+        final int s = SectionMath.sectionOfY(y);
+        if (s >= sections.length) {
+            return SectionMath.EMPTY_SLOT;
+        }
+        final Object section = sections[s];
+        if (section == null) {
+            //No section = air
+            return SectionMath.encodeSlot(0, 0, false);
+        }
+
+        if (!m_layoutVerified) {
+            String error = checkSectionArrays(section, m_handles);
+            if (error != null) {
+                throw new IllegalStateException("section layout mismatch: " + error);
+            }
+            if (hasIdArray(section)) {
+                m_layoutVerified = true;
+            }
+        }
+
+        final int index = SectionMath.sectionIndex(
+                SectionMath.blockToLocal(x), y, SectionMath.blockToLocal(z));
+
+        if (m_handles.layout == NmsHandles.Layout.ID16) {
+            final short[] ids16 = (short[]) m_handles.ids16Field.get(section);
+            final int id = ids16 == null ? 0 : ids16[index] & 0xFFFF;
+
+            final int data;
+            if (m_handles.meta16Field != null) {
+                final short[] meta16 = (short[]) m_handles.meta16Field.get(section);
+                data = meta16 == null ? 0 : meta16[index] & SectionMath.MAX_DATA;
+            } else {
+                data = readMetaNibble(section, index);
+            }
+            return SectionMath.encodeSlot(id, data, false);
+        }
+
+        final byte[] lsb = (byte[]) m_handles.lsbField.get(section);
+        if (lsb == null) {
+            //Spigot compacted uniform section: read the compact bytes
+            //without expanding the section
+            resolveCompactFields(section.getClass());
+            if (m_compactIdField == null) {
+                return SectionMath.EMPTY_SLOT;
+            }
+            return SectionMath.encodeSlot(
+                    m_compactIdField.getByte(section) & 0xFF,
+                    m_compactDataField.getByte(section) & SectionMath.MAX_DATA,
+                    false);
+        }
+
+        int id = lsb[index] & 0xFF;
+        final Object msbNibble = m_handles.msbField.get(section);
+        if (msbNibble != null) {
+            final byte[] msb = (byte[]) m_handles.nibbleDataField.get(msbNibble);
+            if (msb != null) {
+                id |= SectionMath.nibbleGet(msb, index) << 8;
+            }
+        }
+        return SectionMath.encodeSlot(id, readMetaNibble(section, index), false);
+    }
+
+    /**
+     * The metadata nibble of a section position, 0 when the section has no
+     * materialized metadata array
+     */
+    private int readMetaNibble(Object section, int index) throws Exception {
+        if (m_handles.metaField == null || m_handles.nibbleDataField == null) {
+            return 0;
+        }
+        final Object nibble = m_handles.metaField.get(section);
+        if (nibble == null) {
+            return 0;
+        }
+        final byte[] meta = (byte[]) m_handles.nibbleDataField.get(nibble);
+        return meta == null ? 0 : SectionMath.nibbleGet(meta, index);
+    }
+
+    /**
      * True when the section has a materialized id array for the detected
      * layout
      */
