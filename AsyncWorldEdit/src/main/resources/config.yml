@@ -18,6 +18,20 @@ awe:
     undo-spool-threshold-mb: 8
     #verbose engine logging: per placer run + per job completion stats
     debug: false
+    #region streamed flushing (buffered engine): chunks of a running job are
+    #flushed DURING production instead of all at once at job end - blocks pop
+    #progressively, live buffer memory stays bounded by the window, and the
+    #end-of-job flush burst disappears
+    stream:
+      #flush ready chunks while the job is still producing
+      enabled: true
+      #per job live section window: when a job holds more section buffers
+      #than this, its least-recently-written chunks are flushed first
+      #(256 sections = 8 MB of live buffers per job)
+      window-sections: 256
+      #a chunk not written to for this many placer runs is flushed
+      #(40 runs = ~2 seconds at rendering interval 1)
+      stale-runs: 40
   rendering:
     #amount of time (in ticks) the server will place a chunk of blocks
     interval: 1

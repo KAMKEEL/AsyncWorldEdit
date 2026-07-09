@@ -79,6 +79,7 @@ import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
 import org.primesoft.asyncworldedit.chunkbatch.EngineStats;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
+import org.primesoft.asyncworldedit.configuration.ConfigEngine;
 import org.primesoft.asyncworldedit.configuration.ConfigMemory;
 import org.primesoft.asyncworldedit.configuration.ConfigRenderer;
 import org.primesoft.asyncworldedit.core.AwePlatform;
@@ -313,6 +314,12 @@ public class BlockPlacer implements IBlockPlacer {
         JobBufferRegistry.getInstance().forceFlush();
         ChunkBatchWriter.getInstance().configure(rConfig.isDirectChunkEnabled(),
                 rConfig.getDirectChunkMinBlocksPerChunk());
+
+        final ConfigEngine eConfig = ConfigProvider.engine();
+        if (eConfig != null) {
+            JobBufferRegistry.getInstance().configureStream(eConfig.isStreamEnabled(),
+                    eConfig.getStreamWindowSections(), eConfig.getStreamStaleRuns());
+        }
 
         m_interval = interval;
         m_tickBudget = new AdaptiveTickBudget(rConfig.getAdaptiveTargetTps(),
@@ -594,9 +601,10 @@ public class BlockPlacer implements IBlockPlacer {
         }
         if (ConfigProvider.engine() != null && ConfigProvider.engine().isDebug()) {
             log(String.format(
-                    "[ENGINE] jobs=%d buffered-flushed=%d chunks-flushed=%d chunks-carried=%d sections-live=%d/%d",
+                    "[ENGINE] jobs=%d buffered-flushed=%d chunks-flushed=%d streamed=%d window-evict=%d chunks-carried=%d sections-live=%d/%d",
                     registry.getBufferCount(), registry.getLastFlushedBlocks(),
-                    registry.getLastFlushedChunks(), registry.getLastCarriedChunks(),
+                    registry.getLastFlushedChunks(), registry.getLastStreamedChunks(),
+                    registry.getLastWindowEvictions(), registry.getLastCarriedChunks(),
                     org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getUsed(),
                     org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getMaxSections()));
         }

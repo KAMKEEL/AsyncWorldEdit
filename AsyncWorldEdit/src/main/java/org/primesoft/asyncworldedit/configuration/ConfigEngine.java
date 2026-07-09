@@ -61,11 +61,32 @@ public class ConfigEngine {
      */
     public static final int DEFAULT_UNDO_SPOOL_THRESHOLD_MB = 8;
 
+    /**
+     * Default for the region streamed flushing toggle
+     */
+    public static final boolean DEFAULT_STREAM_ENABLED = true;
+
+    /**
+     * Default per job live section window (256 sections = 8 MB per job)
+     */
+    public static final int DEFAULT_STREAM_WINDOW_SECTIONS = 256;
+
+    /**
+     * Default staleness threshold in placer runs (~2s at interval 1)
+     */
+    public static final int DEFAULT_STREAM_STALE_RUNS = 40;
+
     private final EngineMode m_mode;
 
     private final int m_undoSpoolThresholdMb;
 
     private final boolean m_debug;
+
+    private final boolean m_streamEnabled;
+
+    private final int m_streamWindowSections;
+
+    private final int m_streamStaleRuns;
 
     /**
      * The active placement engine
@@ -97,11 +118,37 @@ public class ConfigEngine {
         return m_debug;
     }
 
+    /**
+     * Region streamed flushing: flush ready chunks of still-producing jobs
+     * during production instead of only at job end
+     */
+    public boolean isStreamEnabled() {
+        return m_streamEnabled;
+    }
+
+    /**
+     * Per job live section watermark: over this the least-recently-written
+     * chunks of the job are streamed out
+     */
+    public int getStreamWindowSections() {
+        return m_streamWindowSections;
+    }
+
+    /**
+     * Number of placer runs without a write before a chunk is streamed out
+     */
+    public int getStreamStaleRuns() {
+        return m_streamStaleRuns;
+    }
+
     public ConfigEngine(IConfigurationSection engineSection) {
         if (engineSection == null) {
             m_mode = EngineMode.BUFFERED;
             m_undoSpoolThresholdMb = DEFAULT_UNDO_SPOOL_THRESHOLD_MB;
             m_debug = false;
+            m_streamEnabled = DEFAULT_STREAM_ENABLED;
+            m_streamWindowSections = DEFAULT_STREAM_WINDOW_SECTIONS;
+            m_streamStaleRuns = DEFAULT_STREAM_STALE_RUNS;
             return;
         }
 
@@ -109,5 +156,10 @@ public class ConfigEngine {
         m_undoSpoolThresholdMb = Math.max(1,
                 engineSection.getInt("undo-spool-threshold-mb", DEFAULT_UNDO_SPOOL_THRESHOLD_MB));
         m_debug = engineSection.getBoolean("debug", false);
+        m_streamEnabled = engineSection.getBoolean("stream.enabled", DEFAULT_STREAM_ENABLED);
+        m_streamWindowSections = Math.max(1,
+                engineSection.getInt("stream.window-sections", DEFAULT_STREAM_WINDOW_SECTIONS));
+        m_streamStaleRuns = Math.max(1,
+                engineSection.getInt("stream.stale-runs", DEFAULT_STREAM_STALE_RUNS));
     }
 }
