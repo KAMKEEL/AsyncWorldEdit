@@ -98,6 +98,20 @@ public final class PendingChunk {
      */
     private int m_writeSeq;
 
+    /**
+     * The sequence of the most recent write into this chunk (chunk level
+     * last-write stamp). The streaming drain orders a job's chunks by this
+     * value to pick the least-recently-written ones first.
+     */
+    private int m_lastWriteSeq;
+
+    /**
+     * The placer run index of the most recent write into this chunk,
+     * stamped by the registry at buffer() time. The streaming drain flushes
+     * a chunk untouched for stale-runs runs.
+     */
+    private int m_lastTouchRun;
+
     public PendingChunk(int cx, int cz) {
         m_cx = cx;
         m_cz = cz;
@@ -162,8 +176,35 @@ public final class PendingChunk {
         int before = section.getCount();
         section.set(SectionMath.sectionIndex(x, y, z), id, data, notify, seq);
         m_count += section.getCount() - before;
+        m_lastWriteSeq = seq;
 
         return true;
+    }
+
+    /**
+     * The write sequence of the most recent write into this chunk (0 when
+     * nothing was ever stored). With the registry's monotonic global
+     * sequence this orders a job's chunks from least to most recently
+     * written.
+     */
+    public int getLastWriteSeq() {
+        return m_lastWriteSeq;
+    }
+
+    /**
+     * The placer run index of the most recent write into this chunk. Only
+     * meaningful when the owner stamps it via {@link #setLastTouchRun}.
+     */
+    public int getLastTouchRun() {
+        return m_lastTouchRun;
+    }
+
+    /**
+     * Stamp the placer run index of the current write. Called by the
+     * registry inside the chunk lock right after a successful store.
+     */
+    public void setLastTouchRun(int run) {
+        m_lastTouchRun = run;
     }
 
     /**

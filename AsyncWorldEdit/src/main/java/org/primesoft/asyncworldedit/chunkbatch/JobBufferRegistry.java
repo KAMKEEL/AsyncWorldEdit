@@ -48,8 +48,12 @@
 package org.primesoft.asyncworldedit.chunkbatch;
 
 import com.sk89q.worldedit.world.World;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -86,19 +90,34 @@ import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
  *
  * Ordering correctness of the buffered vs. classic paths:
  * <ul>
- * <li>Buffered chunks flush only when their job has finished producing (or
- * on force), classic queue entries are placed during the placer run. When a
- * block does not fit the buffer (section budget full) the producer falls
- * back to the classic path; that classic write clears any earlier buffered
- * value at the same position ({@link #clearBuffered}), so the newer classic
- * write is not overwritten by the stale buffered value at flush time.</li>
+ * <li>Buffered chunks flush when their job has finished producing, on
+ * force, or - streaming - when the job's live section count exceeds the
+ * window watermark or a chunk went stale (see {@link #drainRoundRobin});
+ * classic queue entries are placed during the placer run. When a block
+ * does not fit the buffer (section budget full) the producer falls back to
+ * the classic path; that classic write clears any earlier buffered value
+ * at the same position ({@link #clearBuffered}), so the newer classic
+ * write is not overwritten by the stale buffered value at flush time. A
+ * classic write to a position whose chunk was ALREADY streamed out finds
+ * nothing buffered and is a plain world write over the flushed value -
+ * still last-queued-wins.</li>
  * <li>A later buffered write to a position previously written classically
  * simply flushes after the classic write, so last-queued-wins holds in both
  * directions.</li>
  * <li>Within a job a global monotonic write sequence orders the last write
  * of every position so the classic replay of sub threshold chunks keeps
  * WorldEdit's support-before-attachment order.</li>
+ * <li>A producer write that races a streamed flush of its chunk lands in a
+ * fresh {@link PendingChunk} (the drain detaches the chunk from the map
+ * under the chunk lock BEFORE flushing; the producer re-checks the mapping
+ * inside the lock and retries). The fresh chunk flushes later, so
+ * last-write-wins also holds across a mid-job flush.</li>
  * </ul>
+ *
+ * Undo is unaffected by streaming: WorldEdit's operation time change set
+ * records the old block values when the producer writes them, before
+ * anything is flushed to the world, so mid-job flushes cannot corrupt the
+ * undo data.
  *
  * @author KAMKEEL
  */
@@ -200,8 +219,65 @@ public final class JobBufferRegistry {
     private long m_lastFlushedBlocks;
     private int m_lastFlushedChunks;
     private int m_lastCarriedChunks;
+    private int m_lastStreamedChunks;
+    private int m_lastWindowEvictions;
+
+    /**
+     * Region streamed flushing enabled (awe.engine.stream.enabled)
+     */
+    private volatile boolean m_streamEnabled = DEFAULT_STREAM_ENABLED;
+
+    /**
+     * Window watermark: a job holding more live section buffers than this
+     * has its least-recently-written chunks streamed out
+     * (awe.engine.stream.window-sections)
+     */
+    private volatile int m_windowSections = DEFAULT_WINDOW_SECTIONS;
+
+    /**
+     * Staleness: a chunk not written for this many placer runs is streamed
+     * out (awe.engine.stream.stale-runs)
+     */
+    private volatile int m_staleRuns = DEFAULT_STALE_RUNS;
+
+    /**
+     * The placer run clock for the staleness readiness: advanced once per
+     * non-force drain (one drain per placer run). Producers read it to
+     * stamp chunks at write time.
+     */
+    private volatile int m_runCounter;
+
+    /**
+     * Default for {@link #m_streamEnabled}
+     */
+    public static final boolean DEFAULT_STREAM_ENABLED = true;
+
+    /**
+     * Default for {@link #m_windowSections}: 256 sections = 8 MB of live
+     * buffers per job
+     */
+    public static final int DEFAULT_WINDOW_SECTIONS = 256;
+
+    /**
+     * Default for {@link #m_staleRuns}: ~2 seconds at interval 1
+     */
+    public static final int DEFAULT_STALE_RUNS = 40;
 
     JobBufferRegistry() {
+    }
+
+    /**
+     * Apply the streaming configuration (awe.engine.stream). Called from
+     * the block placer on startup and reload.
+     *
+     * @param enabled stream chunks of still-producing jobs
+     * @param windowSections per job live section watermark (min 1)
+     * @param staleRuns runs without a write before a chunk is ready (min 1)
+     */
+    public void configureStream(boolean enabled, int windowSections, int staleRuns) {
+        m_streamEnabled = enabled;
+        m_windowSections = Math.max(1, windowSections);
+        m_staleRuns = Math.max(1, staleRuns);
     }
 
     /**
@@ -275,6 +351,8 @@ public final class JobBufferRegistry {
 
         final int beforeCount = chunk.getCount();
         chunk.setBlock(x, y, z, id, data, notify, (int) m_writeSeq.getAndIncrement());
+        //Staleness stamp for the streaming drain (we hold the chunk lock)
+        chunk.setLastTouchRun(m_runCounter);
 
         if (needsNewSection) {
             buf.getSectionsHeld().incrementAndGet();
@@ -393,15 +471,43 @@ public final class JobBufferRegistry {
     }
 
     /**
+     * One job's share of a drain pass: the buffer plus, for a
+     * still-producing job serviced by the streaming readiness, the ordered
+     * (least-recently-written first) chunk keys selected for this pass.
+     * {@code streamKeys == null} means a full drain (job done or force):
+     * the chunk order queue is polled instead.
+     */
+    private static final class JobDrain {
+
+        final JobBuffer buf;
+        final ArrayDeque<Long> streamKeys;
+
+        JobDrain(JobBuffer buf, ArrayDeque<Long> streamKeys) {
+            this.buf = buf;
+            this.streamKeys = streamKeys;
+        }
+    }
+
+    /**
      * Round robin drain.
      *
-     * A job is flushed only when it is ready - its producer has finished
-     * (task done / job gone / no job) - or when {@code force} is set;
-     * partial chunks of a still-producing job stay buffered until job end or
-     * force. Ready jobs contribute one chunk per rotation so no single job
-     * starves the others. The flush stops when the budget is used up (at
-     * least one chunk is always flushed) and unflushed chunks carry over to
-     * the next run.
+     * A job contributes chunks when it is ready - its producer has finished
+     * (task done / job gone / no job) - or when {@code force} is set; in
+     * addition, with streaming enabled, a still-producing job contributes
+     * its watermark/staleness-ready chunks (see {@link #selectStreamReady}).
+     * A canceled job's unflushed buffers are dropped, never placed
+     * (already streamed blocks stay in the world and remain undoable
+     * through the operation time change set). Ready jobs contribute one
+     * chunk per rotation so no single job starves the others. The flush
+     * stops when the budget is used up (at least one chunk is always
+     * flushed) and unflushed chunks carry over to the next run - streamed
+     * readiness is recomputed from the live watermark on every run, so a
+     * budget-cut selection simply reappears while the job stays over the
+     * window.
+     *
+     * Undo note: streaming flushes nothing that is not already captured -
+     * the job's operation time change set recorded every old value at
+     * produce time, before any flush.
      *
      * @param limit budget, null for an unmetered full flush
      * @param sink the flush sink
@@ -411,15 +517,33 @@ public final class JobBufferRegistry {
         m_lastFlushedBlocks = 0;
         m_lastFlushedChunks = 0;
         m_lastCarriedChunks = 0;
+        m_lastStreamedChunks = 0;
+        m_lastWindowEvictions = 0;
+
+        if (!force) {
+            //The staleness clock: one tick per placer-run drain
+            m_runCounter++;
+        }
 
         if (m_buffers.isEmpty()) {
             return;
         }
 
-        final List<JobBuffer> ready = new ArrayList<JobBuffer>();
+        final List<JobDrain> ready = new ArrayList<JobDrain>();
         for (JobBuffer buf : m_buffers.values()) {
+            if (isCanceled(buf)) {
+                //Cancel semantics: drop the unflushed buffers (parity with
+                //the classic queue purge), never place them
+                discardBuffer(buf);
+                continue;
+            }
             if (force || isReady(buf)) {
-                ready.add(buf);
+                ready.add(new JobDrain(buf, null));
+            } else if (m_streamEnabled) {
+                final ArrayDeque<Long> streamKeys = selectStreamReady(buf);
+                if (streamKeys != null) {
+                    ready.add(new JobDrain(buf, streamKeys));
+                }
             }
         }
         if (ready.isEmpty()) {
@@ -436,23 +560,32 @@ public final class JobBufferRegistry {
             if (idx >= ready.size()) {
                 idx = 0;
             }
-            final JobBuffer buf = ready.get(idx);
+            final JobDrain drain = ready.get(idx);
 
-            final Long key = buf.getChunkOrder().poll();
+            final Long key = drain.streamKeys != null
+                    ? drain.streamKeys.poll()
+                    : drain.buf.getChunkOrder().poll();
             if (key == null) {
-                //This job is drained: prune it if it finished producing
+                //This job's share of the pass is drained; prune only a
+                //fully drained job that finished producing
                 ready.remove(idx);
-                pruneIfDone(buf);
+                if (drain.streamKeys == null) {
+                    pruneIfDone(drain.buf);
+                }
                 continue;
             }
 
-            final PendingChunk chunk = detach(buf, key.longValue());
+            final PendingChunk chunk = detach(drain.buf, key.longValue());
             if (chunk == null) {
-                //Duplicate order key / already drained - skip without cost
+                //Duplicate order key / already drained (e.g. streamed out
+                //in an earlier run) - skip without cost
                 continue;
             }
 
-            flushChunk(buf, chunk, sink);
+            flushChunk(drain.buf, chunk, sink);
+            if (drain.streamKeys != null) {
+                m_lastStreamedChunks++;
+            }
             first = false;
             idx++;
         }
@@ -463,6 +596,142 @@ public final class JobBufferRegistry {
         for (JobBuffer buf : m_buffers.values()) {
             m_lastCarriedChunks += buf.getChunks().size();
         }
+    }
+
+    /**
+     * Streaming readiness of a still-producing job: the chunk keys to
+     * flush this pass, in ascending last-write order, or null when nothing
+     * is ready.
+     *
+     * <ul>
+     * <li>Window watermark: when the job holds more live section buffers
+     * than window-sections, its least-recently-written chunks are selected
+     * until the remainder fits the window again.</li>
+     * <li>Staleness: a chunk not written for stale-runs placer runs is
+     * selected regardless of the watermark.</li>
+     * </ul>
+     *
+     * Attachment ordering stays safe across the many streamed passes of a
+     * job: WorldEdit's reorder stage emits attachments (torches, levers,
+     * rails) only after every support block of the operation, so an
+     * attachment always carries a higher write sequence than every
+     * support. Selection here is in ascending chunk last-write order, so a
+     * support-bearing chunk is selected no later than the chunk holding
+     * its attachment, and within one chunk flush the shouldPlaceLast
+     * deferral (ChunkBatchWriter) replays attachments after the supports.
+     * Residual cross-chunk cases (a support chunk rewritten later than the
+     * attachment write) are covered exactly like the job-end drain of the
+     * v1 engine: direct section writes fire no physics and the physics
+     * freeze holds during classic replay, so an attachment cannot pop
+     * before its support lands.
+     */
+    private ArrayDeque<Long> selectStreamReady(JobBuffer buf) {
+        if (buf.getChunks().isEmpty()) {
+            return null;
+        }
+
+        final int held = buf.getSectionsHeld().get();
+        final int run = m_runCounter;
+
+        //Snapshot the per chunk stamps under each chunk's lock
+        final List<long[]> stamps = new ArrayList<long[]>(buf.getChunks().size());
+        for (Map.Entry<Long, PendingChunk> entry : buf.getChunks().entrySet()) {
+            final PendingChunk chunk = entry.getValue();
+            synchronized (chunk) {
+                if (buf.getChunks().get(entry.getKey()) != chunk) {
+                    continue;
+                }
+                stamps.add(new long[]{
+                    chunk.getLastWriteSeq(),
+                    chunk.getSectionCount(),
+                    chunk.getLastTouchRun(),
+                    entry.getKey().longValue()});
+            }
+        }
+        if (stamps.isEmpty()) {
+            return null;
+        }
+
+        //Least recently written first
+        Collections.sort(stamps, new Comparator<long[]>() {
+            @Override
+            public int compare(long[] a, long[] b) {
+                return a[0] < b[0] ? -1 : (a[0] == b[0] ? 0 : 1);
+            }
+        });
+
+        //Sections that must leave to bring the job back under the window
+        int mustEvict = held - m_windowSections;
+
+        ArrayDeque<Long> ready = null;
+        for (long[] stamp : stamps) {
+            final boolean windowEvict = mustEvict > 0;
+            final boolean stale = run - (int) stamp[2] >= m_staleRuns;
+            if (!windowEvict && !stale) {
+                //Not over the window (any more) and not stale; keep
+                //scanning - stale chunks are not ordered by seq
+                continue;
+            }
+
+            if (ready == null) {
+                ready = new ArrayDeque<Long>();
+            }
+            ready.add(Long.valueOf(stamp[3]));
+            if (windowEvict) {
+                mustEvict -= (int) stamp[1];
+                m_lastWindowEvictions++;
+            }
+        }
+        return ready;
+    }
+
+    /**
+     * True when the job of a buffer was canceled: its unflushed buffers
+     * are dropped instead of flushed
+     */
+    private static boolean isCanceled(JobBuffer buf) {
+        final IJobEntry job = buf.getJob();
+        return job != null && job.getStatus() == JobStatus.Canceled;
+    }
+
+    /**
+     * Drop every unflushed chunk of a (canceled) buffer without placing
+     * anything: release the shared section budget and the counters, then
+     * prune the buffer. A producer racing the discard retries into a fresh
+     * chunk (detach contract); the recreated buffer is discarded again on
+     * the next drain once production stops.
+     */
+    private void discardBuffer(JobBuffer buf) {
+        for (;;) {
+            final Long key = buf.getChunkOrder().poll();
+            if (key == null) {
+                break;
+            }
+            discardChunk(buf, key.longValue());
+        }
+        //Defensive sweep: every mapped chunk had its key queued, but a
+        //duplicate-free walk of the map costs nothing extra here
+        for (Long key : buf.getChunks().keySet()) {
+            discardChunk(buf, key.longValue());
+        }
+
+        final UUID uuid = buf.getPlayer() == null ? null : buf.getPlayer().getUUID();
+        if (m_buffers.remove(new Key(uuid, buf.getJobId()), buf)) {
+            logJobDone(buf);
+        }
+    }
+
+    /**
+     * Detach and drop one chunk of a discarded buffer (no sink)
+     */
+    private void discardChunk(JobBuffer buf, long key) {
+        final PendingChunk chunk = detach(buf, key);
+        if (chunk == null) {
+            return;
+        }
+        buf.getQueuedBlocks().addAndGet(-chunk.getCount());
+        buf.getSectionsHeld().addAndGet(-chunk.getSectionCount());
+        SectionBudget.getShared().release(chunk.getSectionCount());
     }
 
     /**
@@ -632,6 +901,30 @@ public final class JobBufferRegistry {
 
     public int getLastCarriedChunks() {
         return m_lastCarriedChunks;
+    }
+
+    /**
+     * Chunks flushed by the last drain out of still-producing jobs
+     * (watermark or staleness readiness)
+     */
+    public int getLastStreamedChunks() {
+        return m_lastStreamedChunks;
+    }
+
+    /**
+     * Chunks selected by the window watermark in the last drain (staleness
+     * only picks are counted in {@link #getLastStreamedChunks} but not
+     * here)
+     */
+    public int getLastWindowEvictions() {
+        return m_lastWindowEvictions;
+    }
+
+    /**
+     * The current placer-run clock of the staleness readiness (test seam)
+     */
+    int getRunCounter() {
+        return m_runCounter;
     }
 
     /**
