@@ -283,14 +283,6 @@ public class AsyncWorld extends AbstractWorldWrapper {
         return m_blocksHub.canPlace(player, world, location, oldBlock, newBlock);
     }
     
-    private boolean isSameData(BaseBlock oldBlock, int newData) {
-        return isSame(oldBlock, new BaseBlock(oldBlock.getType(), newData));
-    }
-    
-    private boolean isSame(BaseBlock oldBlock, int newType) {
-        return isSame(oldBlock, new BaseBlock(newType, oldBlock.getData()));
-    }
-    
     private boolean isSame(BaseBlock oldBlock, BaseBlock newBlock) {
         return oldBlock.equals(newBlock) && !oldBlock.hasNbtData() && !newBlock.hasNbtData();
     }
