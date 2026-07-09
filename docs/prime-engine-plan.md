@@ -167,6 +167,25 @@ In-game gate: //set 1M+ blocks shows progressive chunk pops; [ENGINE]
 line shows same-or-better blocks/sec; sections-live stays near the
 window cap during the job instead of growing.
 
+### Phase 1 gate run #1 (2026-07-09) and follow-up
+
+Warm 1.13M-block //set, streamed build: 141.8k / 136.6k blocks/sec,
+minTPS 19.5/19.6; classic same session: 101.5k / 103.3k, minTPS 18.4.
+//undo replayed progressively through the buffered engine (the Phase 3
+assumption, proven in-game). Two findings, both fixed:
+
+1. The per run [ENGINE] line was gated on the static engine.debug
+   config while `awe engine debug on` only flips the live toggle - the
+   gate metrics (sections-live, streamed, window-evict) were invisible.
+   All engine debug output now honors the live toggle. Also silenced
+   the per-fragment "job -1 done" spam of loose writes (//undo).
+2. The ~12% gap vs the 160k flush-at-end baseline is window-eviction
+   churn: WE region iterators sweep horizontal layers (y outermost,
+   verified in CuboidRegion), so a wide job rewrites every chunk column
+   on every layer and a minimal eviction re-flushes the same columns
+   with thin slices (packet + relight each). Eviction now drains to
+   HALF the window (hysteresis) for rarer, larger passes.
+
 ## Phase 2 - Columnar reads (kill the read allocator)
 
 - Add a raw read path to the NMS layer: packed (id,data) int straight from
@@ -185,6 +204,19 @@ window cap during the job instead of growing.
 
 Tests: raw read vs written values on every layout (synthetic classes,
 same style as NmsProbeTest), sanity-check refusal, packed encode/decode.
+
+### Phase 2 status (2026-07-09)
+
+Delivered: NmsChunkWriter.readRaw - packed (id,data) reads for all
+three layouts (NEID wide-meta, NEID nibble-meta, vanilla incl. MSB and
+Spigot compact sections WITHOUT expanding them), guarded by the same
+first-section sanity check as the write path, never loads chunks; six
+exact-value layout tests. The buffered call path slim from the Phase 0
+item 3 audit: no old-block world read in the async pre-check under the
+buffered engine (the blacklist only reads the new block) and the
+classic closure is only allocated when the classic path is taken.
+Remaining Phase 2 consumers (flush-time old-value capture) land with
+Phase 3, which owns the only caller.
 
 In-game gate: no behavior change expected; blocks/sec same or better;
 this phase is judged by the test bank and by Phase 3 building cleanly on it.
