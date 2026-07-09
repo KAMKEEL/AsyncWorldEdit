@@ -26,8 +26,10 @@ awe:
       #flush ready chunks while the job is still producing
       enabled: true
       #per job live section window: when a job holds more section buffers
-      #than this, its least-recently-written chunks are flushed first
-      #(256 sections = 8 MB of live buffers per job)
+      #than this, its least-recently-written chunks are flushed until the
+      #job is down to HALF the window (hysteresis: fewer, larger flush
+      #passes instead of re-flushing thin slices of the same chunks).
+      #256 sections = 8 MB of live buffers per job
       window-sections: 256
       #a chunk not written to for this many placer runs is flushed
       #(40 runs = ~2 seconds at rendering interval 1)

@@ -254,23 +254,27 @@ public class JobBufferStreamingTest {
         assertEquals(0, reg.getLastStreamedChunks());
         assertEquals(0, reg.getLastWindowEvictions());
 
-        //A third section pushes the job OVER the watermark: exactly the
-        //least recently written chunk streams out, the rest stays
+        //A third section pushes the job OVER the watermark: hysteresis
+        //drains it to HALF the window (2/2 = 1 live section), evicting the
+        //two least recently written chunks in write order
         buffer(reg, p, 1, job.proxy, world, 32, 64, 0, 3, 0);
         reg.drainRoundRobin(NO_LIMIT, sink, false);
-        assertEquals(1, sink.order.size());
+        assertEquals(2, sink.order.size());
         assertEquals("0,64,0:1:0", sink.order.get(0));
-        assertEquals(1, reg.getLastStreamedChunks());
-        assertEquals(1, reg.getLastWindowEvictions());
-        assertEquals(2, SectionBudget.getShared().getUsed());
+        assertEquals("16,64,0:2:0", sink.order.get(1));
+        assertEquals(2, reg.getLastStreamedChunks());
+        assertEquals(2, reg.getLastWindowEvictions());
+        //Down to the low watermark, not just below the window
+        assertEquals(1, SectionBudget.getShared().getUsed());
         assertTrue(reg.hasWork());
     }
 
     @Test
     public void leastRecentlyWrittenChunksStreamFirst() {
-        //Window of 1: two of the three chunks must stream out, in ascending
-        //last-write order
-        JobBufferRegistry reg = streamingRegistry(1, 1000);
+        //Window of 2 with three live sections: hysteresis evicts down to
+        //one live section, so exactly the two least-recently-written
+        //chunks stream out, in ascending last-write order
+        JobBufferRegistry reg = streamingRegistry(2, 1000);
         IWorld world = aweWorld("world");
         IPlayerEntry p = player(new UUID(21, 2));
         FakeJob job = new FakeJob();

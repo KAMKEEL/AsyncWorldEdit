@@ -606,7 +606,8 @@ public final class JobBufferRegistry {
      * <ul>
      * <li>Window watermark: when the job holds more live section buffers
      * than window-sections, its least-recently-written chunks are selected
-     * until the remainder fits the window again.</li>
+     * until the job is down to HALF the window (hysteresis, see the low
+     * watermark note in the body).</li>
      * <li>Staleness: a chunk not written for stale-runs placer runs is
      * selected regardless of the watermark.</li>
      * </ul>
@@ -660,8 +661,17 @@ public final class JobBufferRegistry {
             }
         });
 
-        //Sections that must leave to bring the job back under the window
-        int mustEvict = held - m_windowSections;
+        //Hysteresis: once over the window, evict down to HALF the window,
+        //not just below it. WE's region iterators sweep horizontal layers
+        //(y outermost - verified in CuboidRegion), so every chunk column
+        //of a wide job is rewritten on every layer; evicting the bare
+        //minimum each run would re-flush the same columns over and over
+        //with one thin slice each (a refresh packet + relight per flush).
+        //Draining to the low watermark makes eviction passes rarer and
+        //lets a rewritten column accumulate full sections before it
+        //streams again.
+        int mustEvict = held > m_windowSections
+                ? held - (m_windowSections / 2) : 0;
 
         ArrayDeque<Long> ready = null;
         for (long[] stamp : stamps) {
