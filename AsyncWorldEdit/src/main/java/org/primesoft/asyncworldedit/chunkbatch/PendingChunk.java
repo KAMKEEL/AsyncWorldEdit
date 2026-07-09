@@ -67,8 +67,9 @@ public final class PendingChunk {
          * @param id the block id
          * @param data the block metadata
          * @param notify the notify flag the block was queued with
+         * @param seq the sequence number of the position's last write
          */
-        void visit(int x, int y, int z, int id, int data, boolean notify);
+        void visit(int x, int y, int z, int id, int data, boolean notify, int seq);
     }
 
     private final int m_cx;
@@ -86,8 +87,14 @@ public final class PendingChunk {
     private int m_count;
 
     /**
-     * Monotonic write sequence, used to keep insertion order for the
-     * classic replay of small batches
+     * Number of allocated section buffers (memory bookkeeping)
+     */
+    private int m_sectionCount;
+
+    /**
+     * Chunk local fallback write sequence, used when the caller does not
+     * provide one. The batch writer always provides a batch global
+     * sequence so replay order is comparable across chunks.
      */
     private int m_writeSeq;
 
@@ -119,13 +126,25 @@ public final class PendingChunk {
     }
 
     /**
-     * Store a pending block. The world coordinates must belong to this
-     * chunk and 0 &lt;= y &lt;= 255 (the caller checks eligibility).
+     * Store a pending block using the chunk local write sequence. Only
+     * suitable when replay order across chunks does not matter.
      *
      * @return false when the coordinates do not belong to this chunk or y
      * is out of range (nothing is stored)
      */
     public boolean setBlock(int x, int y, int z, int id, int data, boolean notify) {
+        return setBlock(x, y, z, id, data, notify, m_writeSeq++);
+    }
+
+    /**
+     * Store a pending block with an explicit (batch global) write
+     * sequence. The world coordinates must belong to this chunk and
+     * 0 &lt;= y &lt;= 255 (the caller checks eligibility).
+     *
+     * @return false when the coordinates do not belong to this chunk or y
+     * is out of range (nothing is stored)
+     */
+    public boolean setBlock(int x, int y, int z, int id, int data, boolean notify, int seq) {
         if (SectionMath.blockToChunk(x) != m_cx
                 || SectionMath.blockToChunk(z) != m_cz
                 || y < 0 || y > 255) {
@@ -137,13 +156,31 @@ public final class PendingChunk {
         if (section == null) {
             section = new PendingSection();
             m_sections[sectionIdx] = section;
+            m_sectionCount++;
         }
 
         int before = section.getCount();
-        section.set(SectionMath.sectionIndex(x, y, z), id, data, notify, m_writeSeq++);
+        section.set(SectionMath.sectionIndex(x, y, z), id, data, notify, seq);
         m_count += section.getCount() - before;
 
         return true;
+    }
+
+    /**
+     * Number of allocated section buffers. Each buffer costs a fixed
+     * amount of memory (the slot and sequence arrays), so this is the
+     * number the batch writer uses for its memory cap.
+     */
+    public int getSectionCount() {
+        return m_sectionCount;
+    }
+
+    /**
+     * True when storing a block at this y would allocate a new section
+     * buffer
+     */
+    public boolean needsNewSection(int y) {
+        return y >= 0 && y <= 255 && m_sections[SectionMath.sectionOfY(y)] == null;
     }
 
     /**
@@ -222,7 +259,8 @@ public final class PendingChunk {
                     (s << 4) + SectionMath.indexToY(index),
                     bz + SectionMath.indexToZ(index),
                     SectionMath.slotId(slot), SectionMath.slotData(slot),
-                    SectionMath.slotNotify(slot));
+                    SectionMath.slotNotify(slot),
+                    m_sections[s].getSeq(index));
         }
     }
 

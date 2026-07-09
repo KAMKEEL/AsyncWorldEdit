@@ -351,6 +351,89 @@ public class ChunkBatchWriterTest {
     }
 
     @Test
+    public void sectionMemoryCapFallsBackToClassic() {
+        ParentWorld parent = new ParentWorld();
+        StubWorld world = new StubWorld();
+        ChunkBatchWriter writer = openWriter();
+        writer.setMaxPendingSectionsForTest(2);
+
+        //Two sections fit under the cap
+        assertTrue(batch(writer, parent, world, 1, 0, 1, 1, 0));
+        assertTrue(batch(writer, parent, world, 1, 16, 1, 1, 0));
+        assertEquals(2, writer.getPendingSectionCount());
+
+        //A third section would exceed the memory cap - classic fallback
+        assertFalse(batch(writer, parent, world, 1, 32, 1, 1, 0));
+        //Writes into ALREADY allocated sections stay batched (free)
+        assertTrue(batch(writer, parent, world, 2, 1, 2, 1, 0));
+        assertEquals(2, writer.getPendingSectionCount());
+
+        //The flush releases the accounting
+        writer.closeWindow();
+        assertEquals(0, writer.getPendingSectionCount());
+
+        //And new sections are accepted again in the next window
+        writer.openWindow();
+        assertTrue(batch(writer, parent, world, 1, 32, 1, 1, 0));
+        assertEquals(1, writer.getPendingSectionCount());
+        writer.closeWindow();
+        assertEquals(0, writer.getPendingSectionCount());
+    }
+
+    @Test
+    public void attachmentsReplayAfterSupportsOfAllChunks() {
+        ParentWorld parent = new ParentWorld();
+        StubWorld world = new StubWorld();
+        ChunkBatchWriter writer = openWriter();
+
+        //WorldEdit queues attachments last, but the torch may land in the
+        //chunk that flushes FIRST while its wall is in a later chunk. The
+        //torch (id 50, shouldPlaceLast) must still be placed after the
+        //supports of every chunk of the pass.
+        assertTrue(batch(writer, parent, world, 1, 64, 1, 1, 0));    //chunk 0, stone
+        assertTrue(batch(writer, parent, world, 17, 64, 1, 4, 0));   //chunk 1, wall
+        assertTrue(batch(writer, parent, world, 2, 64, 2, 50, 1));   //chunk 0, torch
+
+        writer.closeWindow();
+
+        assertEquals(3, parent.placed.size());
+        assertEquals("1,64,1:1:0", parent.placed.get(0));
+        assertEquals("17,64,1:4:0", parent.placed.get(1));
+        assertEquals("2,64,2:50:1", parent.placed.get(2));
+    }
+
+    @Test
+    public void deferredAttachmentsAreNeverLostOnBudgetExhaustion() {
+        ParentWorld parent = new ParentWorld();
+        StubWorld world = new StubWorld();
+        ChunkBatchWriter writer = openWriter();
+
+        assertTrue(batch(writer, parent, world, 1, 64, 1, 1, 0));    //chunk 0, stone
+        assertTrue(batch(writer, parent, world, 2, 64, 2, 50, 1));   //chunk 0, torch
+        assertTrue(batch(writer, parent, world, 17, 64, 1, 2, 0));   //chunk 1, carried
+
+        //Budget already used up: chunk 0 flushes, chunk 1 carries over -
+        //but the deferred torch of chunk 0 must still be placed NOW, its
+        //chunk is gone from the batch
+        writer.closeWindow(new ChunkBatchWriter.IFlushLimit() {
+            @Override
+            public boolean shouldContinue() {
+                return false;
+            }
+        });
+
+        assertEquals(2, parent.placed.size());
+        assertEquals("1,64,1:1:0", parent.placed.get(0));
+        assertEquals("2,64,2:50:1", parent.placed.get(1));
+        assertTrue(writer.hasCarryOver());
+
+        writer.openWindow();
+        writer.closeWindow();
+        assertEquals(3, parent.placed.size());
+        assertEquals("17,64,1:2:0", parent.placed.get(2));
+    }
+
+    @Test
     public void forceFlushWritesCarriedBatchesWithoutAWindow() {
         ParentWorld parent = new ParentWorld();
         StubWorld world = new StubWorld();

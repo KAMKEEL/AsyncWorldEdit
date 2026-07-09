@@ -117,6 +117,118 @@ public class NmsChunkWriterTest {
     }
 
     //---------------------------------------------------------------------
+    //Spigot 1.7.10 compact section support: uniform sections keep a null
+    //id array plus compactId/compactData bytes (FAWE's BukkitQueue17
+    //handles the same fields). Writing a fresh zero array over such a
+    //section would erase it.
+    //---------------------------------------------------------------------
+    public static class FakeSectionSpigotCompact {
+
+        public byte[] blockIds;
+        public NmsProbeTest.FakeNibble extBlockIds;
+        public NmsProbeTest.FakeNibble blockData;
+        public byte compactId;
+        public byte compactData;
+
+        public FakeSectionSpigotCompact(int yBase, boolean hasSky) {
+        }
+
+        public void recalcBlockCounts() {
+        }
+    }
+
+    public static class FakeChunkSpigotCompact {
+
+        public Map<Object, Object> tileEntities = new HashMap<Object, Object>();
+
+        public FakeSectionSpigotCompact[] getSections() {
+            return new FakeSectionSpigotCompact[16];
+        }
+
+        public void initLighting() {
+        }
+
+        public void e() {
+        }
+    }
+
+    public static class FakeWorldSpigotCompact {
+
+        public NmsProbeTest.FakeProviderCb worldProvider = new NmsProbeTest.FakeProviderCb();
+
+        public FakeChunkSpigotCompact getChunkAt(int x, int z) {
+            return null;
+        }
+    }
+
+    public static class FakeCraftWorldSpigotCompact {
+
+        public FakeWorldSpigotCompact getHandle() {
+            return null;
+        }
+    }
+
+    @Test
+    public void compactSectionIsExpandedNotErased() throws Exception {
+        NmsHandles handles = NmsProbe.probe(FakeCraftWorldSpigotCompact.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        //A uniform all-stone section with metadata 2, fully compacted
+        FakeSectionSpigotCompact section = new FakeSectionSpigotCompact(0, true);
+        section.compactId = 1;
+        section.compactData = 2;
+
+        byte[] lsb = writer.ensureVanillaIdArray(section);
+        assertNotNull(lsb);
+        assertEquals(SectionMath.SECTION_SIZE, lsb.length);
+        //Every block of the uniform section must survive the expansion
+        for (int i = 0; i < lsb.length; i++) {
+            assertEquals(1, lsb[i]);
+        }
+        assertSame(lsb, section.blockIds);
+        assertEquals("compact marker must be cleared", 0, section.compactId);
+
+        byte[] meta = writer.ensureMetaArray(section);
+        assertNotNull(meta);
+        assertEquals(SectionMath.NIBBLE_SIZE, meta.length);
+        for (int i = 0; i < SectionMath.SECTION_SIZE; i++) {
+            assertEquals(2, SectionMath.nibbleGet(meta, i));
+        }
+        assertEquals(0, section.compactData);
+
+        //Already materialized arrays are returned as-is
+        assertSame(lsb, writer.ensureVanillaIdArray(section));
+    }
+
+    @Test
+    public void unknownCompactionIsRefusedNotZeroed() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldVanilla.class);
+        NmsChunkWriter writer = new NmsChunkWriter(handles);
+
+        //A null id array on a class WITHOUT compact fields: expanding to
+        //a zero array would erase whatever mechanism holds the blocks -
+        //the writer must refuse so the section goes to the classic path
+        NmsProbeTest.FakeSectionVanilla section
+                = new NmsProbeTest.FakeSectionVanilla(0, true);
+        section.blockLSBArray = null;
+
+        assertNull(writer.ensureVanillaIdArray(section));
+        assertNull("the section must stay untouched", section.blockLSBArray);
+    }
+
+    @Test
+    public void sectionCheckAcceptsCompactedNullIdArray() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldVanilla.class);
+        NmsProbeTest.FakeSectionVanilla section
+                = new NmsProbeTest.FakeSectionVanilla(0, true);
+        section.blockLSBArray = null;
+
+        //Null is a legal (compacted) state - only a wrong LENGTH means
+        //the probe picked the wrong field
+        assertNull(NmsChunkWriter.checkSectionArrays(section, handles));
+    }
+
+    //---------------------------------------------------------------------
     //Out of range section overflow
     //---------------------------------------------------------------------
     @Test

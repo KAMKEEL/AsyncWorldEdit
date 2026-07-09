@@ -138,6 +138,14 @@ public class NmsChunkWriter {
      */
     private boolean m_layoutVerified;
 
+    /**
+     * Lazily resolved Spigot compact section fields (byte compactId /
+     * byte compactData), null when the server has no section compaction
+     */
+    private Field m_compactIdField;
+    private Field m_compactDataField;
+    private boolean m_compactFieldsResolved;
+
     public NmsChunkWriter(NmsHandles handles) {
         m_handles = handles;
     }
@@ -165,11 +173,13 @@ public class NmsChunkWriter {
             }
         } else {
             byte[] lsb = (byte[]) handles.lsbField.get(section);
-            if (lsb == null || lsb.length != SectionMath.SECTION_SIZE) {
+            //A null id array is legal: Spigot 1.7.10 compacts uniform
+            //sections (compactId/compactData) and only materializes the
+            //array on demand
+            if (lsb != null && lsb.length != SectionMath.SECTION_SIZE) {
                 return String.format(
                         "section id array %s has %d entries, expected %d",
-                        handles.lsbField.getName(),
-                        lsb == null ? 0 : lsb.length,
+                        handles.lsbField.getName(), lsb.length,
                         SectionMath.SECTION_SIZE);
             }
         }
@@ -249,7 +259,11 @@ public class NmsChunkWriter {
                     throw new IllegalStateException(
                             "section layout mismatch: " + error);
                 }
-                m_layoutVerified = true;
+                //Only count the layout as verified once a materialized id
+                //array was seen (compact/uniform sections have none)
+                if (hasIdArray(section)) {
+                    m_layoutVerified = true;
+                }
             }
 
             final int sectionY = s << 4;
@@ -291,10 +305,17 @@ public class NmsChunkWriter {
                     ids16 = new short[SectionMath.SECTION_SIZE];
                     m_handles.ids16Field.set(section, ids16);
                 }
-                byte[] meta = nibbleData(section, m_handles.metaField, true);
+                byte[] meta = ensureMetaArray(section);
                 ps.applyId16(ids16, meta, changed, overflowVisitor);
             } else {
-                byte[] lsb = (byte[]) m_handles.lsbField.get(section);
+                byte[] lsb = ensureVanillaIdArray(section);
+                if (lsb == null) {
+                    //Compacted uniform section (Spigot) that we can not
+                    //expand safely - route the whole section to the
+                    //classic path instead of corrupting it
+                    collectSectionOverflow(pending, s, overflow);
+                    continue;
+                }
                 byte[] msb;
                 if (m_handles.msbField.get(section) == null && ps.needsMsb()) {
                     Object nibble = m_handles.nibbleCtor.newInstance(
@@ -304,7 +325,7 @@ public class NmsChunkWriter {
                 Object msbNibble = m_handles.msbField.get(section);
                 msb = msbNibble != null
                         ? (byte[]) m_handles.nibbleDataField.get(msbNibble) : null;
-                byte[] meta = nibbleData(section, m_handles.metaField, true);
+                byte[] meta = ensureMetaArray(section);
                 ps.applyVanilla(lsb, msb, meta, changed, overflowVisitor);
             }
 
@@ -338,20 +359,93 @@ public class NmsChunkWriter {
     }
 
     /**
-     * Get the raw byte array of a NibbleArray typed section field,
-     * creating the NibbleArray when missing and requested
+     * True when the section has a materialized id array for the detected
+     * layout
      */
-    private byte[] nibbleData(Object section, Field nibbleField, boolean create)
-            throws Exception {
-        Object nibble = nibbleField.get(section);
-        if (nibble == null) {
-            if (!create) {
-                return null;
-            }
-            nibble = m_handles.nibbleCtor.newInstance(SectionMath.SECTION_SIZE, 4);
-            nibbleField.set(section, nibble);
+    private boolean hasIdArray(Object section) throws Exception {
+        if (m_handles.layout == NmsHandles.Layout.ID16) {
+            return m_handles.ids16Field.get(section) != null;
         }
-        return (byte[]) m_handles.nibbleDataField.get(nibble);
+        return m_handles.lsbField.get(section) != null;
+    }
+
+    /**
+     * Get the vanilla LSB id array of a section, expanding a Spigot
+     * compacted uniform section (null array + compactId byte) when
+     * needed.
+     *
+     * @return the id array, or null when the section is compacted and no
+     * compact fields could be resolved (the caller must fall back to the
+     * classic path for this section - overwriting a uniform section with
+     * a zero array would erase it)
+     */
+    byte[] ensureVanillaIdArray(Object section) throws Exception {
+        byte[] lsb = (byte[]) m_handles.lsbField.get(section);
+        if (lsb != null) {
+            return lsb;
+        }
+
+        resolveCompactFields(section.getClass());
+        if (m_compactIdField == null) {
+            return null;
+        }
+
+        lsb = new byte[SectionMath.SECTION_SIZE];
+        byte compactId = m_compactIdField.getByte(section);
+        if (compactId != 0) {
+            java.util.Arrays.fill(lsb, compactId);
+        }
+        m_handles.lsbField.set(section, lsb);
+        m_compactIdField.setByte(section, (byte) 0);
+        return lsb;
+    }
+
+    /**
+     * Get the metadata nibble array of a section, creating the
+     * NibbleArray when missing. A Spigot compacted metadata value
+     * (compactData byte) is expanded into the new array so the uniform
+     * metadata of untouched blocks survives.
+     */
+    byte[] ensureMetaArray(Object section) throws Exception {
+        Object nibble = m_handles.metaField.get(section);
+        if (nibble != null) {
+            return (byte[]) m_handles.nibbleDataField.get(nibble);
+        }
+
+        nibble = m_handles.nibbleCtor.newInstance(SectionMath.SECTION_SIZE, 4);
+        m_handles.metaField.set(section, nibble);
+        byte[] data = (byte[]) m_handles.nibbleDataField.get(nibble);
+
+        resolveCompactFields(section.getClass());
+        if (m_compactDataField != null) {
+            int compactData = m_compactDataField.getByte(section) & 0xF;
+            if (compactData != 0) {
+                byte packed = (byte) (compactData | (compactData << 4));
+                java.util.Arrays.fill(data, packed);
+            }
+            m_compactDataField.setByte(section, (byte) 0);
+        }
+
+        return data;
+    }
+
+    /**
+     * Resolve the optional Spigot 1.7.10 compact section fields once
+     * (byte compactId / byte compactData on ChunkSection)
+     */
+    private void resolveCompactFields(Class<?> sectionClass) {
+        if (m_compactFieldsResolved) {
+            return;
+        }
+        m_compactFieldsResolved = true;
+
+        Field compactId = findAnyField(sectionClass, "compactId");
+        Field compactData = findAnyField(sectionClass, "compactData");
+        if (compactId != null && compactId.getType() == byte.class
+                && compactData != null && compactData.getType() == byte.class) {
+            m_compactIdField = compactId;
+            m_compactDataField = compactData;
+        }
     }
 
     /**

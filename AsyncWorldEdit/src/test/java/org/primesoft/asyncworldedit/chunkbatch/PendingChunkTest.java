@@ -158,7 +158,7 @@ public class PendingChunkTest {
         final List<String> order = new ArrayList<String>();
         chunk.forEachLastWriteOrder(new PendingChunk.IPendingBlockVisitor() {
             @Override
-            public void visit(int x, int y, int z, int id, int data, boolean notify) {
+            public void visit(int x, int y, int z, int id, int data, boolean notify, int seq) {
                 order.add(x + "," + y + "," + z + ":" + id);
             }
         });

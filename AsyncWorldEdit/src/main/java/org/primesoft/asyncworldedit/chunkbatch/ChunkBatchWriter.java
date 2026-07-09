@@ -50,7 +50,9 @@ package org.primesoft.asyncworldedit.chunkbatch;
 import com.sk89q.worldedit.Vector;
 import com.sk89q.worldedit.WorldEditException;
 import com.sk89q.worldedit.blocks.BaseBlock;
+import com.sk89q.worldedit.blocks.BlockType;
 import com.sk89q.worldedit.world.World;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -193,6 +195,70 @@ public class ChunkBatchWriter {
      */
     private boolean m_flushErrorLogged;
 
+    /**
+     * Upper bound of allocated pending section buffers (memory cap). A
+     * section buffer costs 32 KB (slot + sequence array), so the default
+     * bounds the batch memory at 32 MB even for degenerate scattered
+     * edits. Blocks that would need a new section beyond the cap fall
+     * back to the classic path, which naturally throttles admission
+     * against the tick budget (FAWE bounds its queue the same way with
+     * TARGET_SIZE / memory checks).
+     */
+    private static final int DEFAULT_MAX_PENDING_SECTIONS = 1024;
+
+    /**
+     * The active pending section cap (test seam can lower it)
+     */
+    private int m_maxPendingSections = DEFAULT_MAX_PENDING_SECTIONS;
+
+    /**
+     * Number of currently allocated pending section buffers over all
+     * worlds and chunks (including carried over batches)
+     */
+    private int m_pendingSections;
+
+    /**
+     * Batch global write sequence: makes the classic replay order
+     * comparable across chunks so attachments (queued last by WorldEdit)
+     * can be deferred behind the supports of ALL chunks of a flush, not
+     * just their own. Reset when no batches are alive.
+     */
+    private int m_writeSeq;
+
+    /**
+     * A classic replay block whose placement is deferred to the end of
+     * the flush pass (attachments must come after the supports of every
+     * chunk flushed in this pass)
+     */
+    private static final class DeferredBlock implements Comparable<DeferredBlock> {
+
+        final World parent;
+        final int seq;
+        final int x;
+        final int y;
+        final int z;
+        final int id;
+        final int data;
+        final boolean notify;
+
+        DeferredBlock(World parent, int seq, int x, int y, int z,
+                int id, int data, boolean notify) {
+            this.parent = parent;
+            this.seq = seq;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.id = id;
+            this.data = data;
+            this.notify = notify;
+        }
+
+        @Override
+        public int compareTo(DeferredBlock other) {
+            return this.seq < other.seq ? -1 : (this.seq == other.seq ? 0 : 1);
+        }
+    }
+
     ChunkBatchWriter() {
     }
 
@@ -308,6 +374,12 @@ public class ChunkBatchWriter {
     public void openWindow() {
         if (m_enabled && !m_probeAttempted) {
             probe();
+        }
+
+        if (!hasCarryOver()) {
+            //No live pending blocks - safe point to rewind the global
+            //write sequence so it can never overflow
+            m_writeSeq = 0;
         }
 
         if (isActive() || hasCarryOver()) {
@@ -433,13 +505,32 @@ public class ChunkBatchWriter {
                 SectionMath.blockToChunk(x), SectionMath.blockToChunk(z));
 
         PendingChunk chunk = batch.chunks.get(key);
+
+        //Memory cap: a block that needs a NEW section buffer beyond the
+        //cap is refused (classic path); writes into already allocated
+        //sections stay free, so memory is strictly bounded while dense
+        //edits keep batching
+        final boolean needsNewSection
+                = chunk == null || chunk.needsNewSection(y);
+        if (needsNewSection && m_pendingSections >= m_maxPendingSections) {
+            return false;
+        }
+
         if (chunk == null) {
             chunk = new PendingChunk(
                     SectionMath.blockToChunk(x), SectionMath.blockToChunk(z));
             batch.chunks.put(key, chunk);
         }
 
-        return chunk.setBlock(x, y, z, block.getType(), block.getData(), notify);
+        if (!chunk.setBlock(x, y, z, block.getType(), block.getData(), notify,
+                m_writeSeq++)) {
+            return false;
+        }
+
+        if (needsNewSection) {
+            m_pendingSections++;
+        }
+        return true;
     }
 
     /**
@@ -472,6 +563,7 @@ public class ChunkBatchWriter {
         chunk.clear(x, location.getBlockY(), z);
         if (chunk.getCount() == 0) {
             batch.chunks.remove(key);
+            m_pendingSections -= chunk.getSectionCount();
             if (batch.chunks.isEmpty()) {
                 m_batches.remove(bukkitWorld.getName());
             }
@@ -574,38 +666,74 @@ public class ChunkBatchWriter {
             return;
         }
 
-        boolean first = true;
-        final Iterator<WorldBatch> worldIterator = m_batches.values().iterator();
-        while (worldIterator.hasNext()) {
-            final WorldBatch batch = worldIterator.next();
+        //Classic replay blocks WorldEdit queued last (attachments like
+        //torches, levers, doors) are deferred to the end of this flush
+        //pass so the supports of ALL chunks flushed in this pass exist
+        //before any attachment fires its placement physics
+        final List<DeferredBlock> deferred = new ArrayList<DeferredBlock>();
 
-            final Iterator<PendingChunk> chunkIterator = batch.chunks.values().iterator();
-            while (chunkIterator.hasNext()) {
-                if (!first && limit != null && !limit.shouldContinue()) {
-                    //Budget used up - the remaining chunks carry over
-                    return;
-                }
+        try {
+            boolean first = true;
+            final Iterator<WorldBatch> worldIterator = m_batches.values().iterator();
+            while (worldIterator.hasNext()) {
+                final WorldBatch batch = worldIterator.next();
 
-                final PendingChunk chunk = chunkIterator.next();
-                //Remove before processing: a failing chunk must never
-                //survive to the next window (stale overlay, double apply)
-                chunkIterator.remove();
-                first = false;
+                final Iterator<PendingChunk> chunkIterator = batch.chunks.values().iterator();
+                while (chunkIterator.hasNext()) {
+                    if (!first && limit != null && !limit.shouldContinue()) {
+                        //Budget used up - the remaining chunks carry over
+                        return;
+                    }
 
-                try {
-                    flushChunk(batch, chunk);
-                } catch (Throwable ex) {
-                    if (!m_flushErrorLogged) {
-                        m_flushErrorLogged = true;
-                        log(String.format(
-                                "Error while flushing batched chunk %d,%d: %s",
-                                chunk.getX(), chunk.getZ(), ex));
+                    final PendingChunk chunk = chunkIterator.next();
+                    //Remove before processing: a failing chunk must never
+                    //survive to the next window (stale overlay, double apply)
+                    chunkIterator.remove();
+                    m_pendingSections -= chunk.getSectionCount();
+                    first = false;
+
+                    try {
+                        flushChunk(batch, chunk, deferred);
+                    } catch (Throwable ex) {
+                        if (!m_flushErrorLogged) {
+                            m_flushErrorLogged = true;
+                            log(String.format(
+                                    "Error while flushing batched chunk %d,%d: %s",
+                                    chunk.getX(), chunk.getZ(), ex));
+                        }
                     }
                 }
-            }
 
-            if (batch.chunks.isEmpty()) {
-                worldIterator.remove();
+                if (batch.chunks.isEmpty()) {
+                    worldIterator.remove();
+                }
+            }
+        } finally {
+            //Deferred attachments are placed even when the budget ran out
+            //mid pass - their chunks are already written, they must never
+            //be lost
+            replayDeferred(deferred);
+        }
+    }
+
+    /**
+     * Replay the deferred attachment blocks in global write order
+     */
+    private void replayDeferred(List<DeferredBlock> deferred) {
+        if (deferred.isEmpty()) {
+            return;
+        }
+
+        java.util.Collections.sort(deferred);
+        for (DeferredBlock block : deferred) {
+            try {
+                classicPlace(block.parent, block.x, block.y, block.z,
+                        block.id, block.data, block.notify);
+            } catch (Throwable ex) {
+                if (!m_flushErrorLogged) {
+                    m_flushErrorLogged = true;
+                    log("Error while replaying deferred batched block: " + ex);
+                }
             }
         }
     }
@@ -614,7 +742,8 @@ public class ChunkBatchWriter {
      * Flush a single pending chunk: direct NMS section write when the
      * chunk qualifies, classic per block replay otherwise
      */
-    private void flushChunk(WorldBatch batch, PendingChunk chunk) {
+    private void flushChunk(WorldBatch batch, PendingChunk chunk,
+            List<DeferredBlock> deferred) {
         final NmsChunkWriter nmsWriter = m_nmsWriter;
 
         if (nmsWriter != null && !m_runtimeDisabled
@@ -623,8 +752,17 @@ public class ChunkBatchWriter {
                 List<NmsChunkWriter.OverflowBlock> overflow
                         = nmsWriter.apply(batch.bukkit, chunk);
                 for (NmsChunkWriter.OverflowBlock block : overflow) {
-                    classicPlace(batch.parent, block.x, block.y, block.z,
-                            block.id, block.data, block.notify);
+                    if (BlockType.shouldPlaceLast(block.id)
+                            || BlockType.shouldPlaceFinal(block.id)) {
+                        //No per block sequence on the overflow path -
+                        //attachments go last (the sort is stable)
+                        deferred.add(new DeferredBlock(batch.parent, Integer.MAX_VALUE,
+                                block.x, block.y, block.z,
+                                block.id, block.data, block.notify));
+                    } else {
+                        classicPlace(batch.parent, block.x, block.y, block.z,
+                                block.id, block.data, block.notify);
+                    }
                 }
                 return;
             } catch (Throwable ex) {
@@ -634,7 +772,7 @@ public class ChunkBatchWriter {
             }
         }
 
-        classicPlaceChunk(batch.parent, chunk);
+        classicPlaceChunk(batch.parent, chunk, deferred);
     }
 
     /**
@@ -643,13 +781,21 @@ public class ChunkBatchWriter {
      * sequence of each position's last write: WorldEdit's reorder stage
      * queues attachments (torches, levers, rails) after their supports,
      * so a coordinate order replay would fire physics on an unsupported
-     * attachment and pop it off.
+     * attachment and pop it off. Attachment blocks themselves are handed
+     * to the deferred list so they run after every chunk of the pass.
      */
-    private void classicPlaceChunk(final World parent, PendingChunk chunk) {
+    private void classicPlaceChunk(final World parent, PendingChunk chunk,
+            final List<DeferredBlock> deferred) {
         chunk.forEachLastWriteOrder(new PendingChunk.IPendingBlockVisitor() {
             @Override
-            public void visit(int x, int y, int z, int id, int data, boolean notify) {
-                classicPlace(parent, x, y, z, id, data, notify);
+            public void visit(int x, int y, int z, int id, int data,
+                    boolean notify, int seq) {
+                if (BlockType.shouldPlaceLast(id) || BlockType.shouldPlaceFinal(id)) {
+                    deferred.add(new DeferredBlock(parent, seq,
+                            x, y, z, id, data, notify));
+                } else {
+                    classicPlace(parent, x, y, z, id, data, notify);
+                }
             }
         });
     }
@@ -684,5 +830,20 @@ public class ChunkBatchWriter {
         m_runtimeDisabled = false;
         m_minBlocksPerChunk = Math.max(1, minBlocksPerChunk);
         m_nmsWriter = nmsWriter;
+    }
+
+    /**
+     * Test seam: lower the pending section memory cap
+     */
+    void setMaxPendingSectionsForTest(int maxPendingSections) {
+        m_maxPendingSections = Math.max(1, maxPendingSections);
+    }
+
+    /**
+     * Number of allocated pending section buffers (memory bookkeeping,
+     * package private for tests)
+     */
+    int getPendingSectionCount() {
+        return m_pendingSections;
     }
 }
