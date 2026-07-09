@@ -599,7 +599,10 @@ public class BlockPlacer implements IBlockPlacer {
                     m_tickBudget.getTpsEstimate(), m_tickBudget.getBudgetNanos() / 1000000,
                     budgetExceeded ? " (exceeded)" : ""));
         }
-        if (ConfigProvider.engine() != null && ConfigProvider.engine().isDebug()) {
+        //The live toggle (awe engine debug on|off), not the static config
+        //value: the completion lines already honor it, the per run line -
+        //the one showing sections-live vs the stream window - must too
+        if (EngineDebug.isEnabled()) {
             log(String.format(
                     "[ENGINE] jobs=%d buffered-flushed=%d chunks-flushed=%d streamed=%d window-evict=%d chunks-carried=%d sections-live=%d/%d",
                     registry.getBufferCount(), registry.getLastFlushedBlocks(),
