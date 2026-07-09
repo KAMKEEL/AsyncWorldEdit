@@ -232,18 +232,18 @@ public class AsyncWorld extends AbstractWorldWrapper {
         return m_dispatcher.performSafe(MutexProvider.getMutex(getWorld()), new IFunc<Integer>() {
             @Override
             public Integer execute() {
-                return m_parent.getBlockType(vector);
+                return ChunkBatchWriter.getInstance().getBlockType(m_parent, m_bukkitWorld, vector);
             }
         }, m_bukkitWorld, vector);
     }
-    
+
     @Override
     public int getBlockData(final Vector vector) {
         return m_dispatcher.performSafe(MutexProvider.getMutex(getWorld()), new IFunc<Integer>() {
-            
+
             @Override
             public Integer execute() {
-                return m_parent.getBlockData(vector);
+                return ChunkBatchWriter.getInstance().getBlockData(m_parent, m_bukkitWorld, vector);
             }
         }, m_bukkitWorld, vector);
     }
@@ -311,8 +311,13 @@ public class AsyncWorld extends AbstractWorldWrapper {
                     return false;
                 }
 
-                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, bln)
-                        || m_parent.setBlock(v, newBlock, bln);
+                boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, bln);
+                if (!result) {
+                    //Classic path write: a stale pending block at this
+                    //position must not be flushed over it later
+                    batcher.clearPending(m_bukkitWorld, v);
+                    result = m_parent.setBlock(v, newBlock, bln);
+                }
                 if (result) {
                     logBlock(v, player, oldBlock, newBlock);
                 }
@@ -350,8 +355,11 @@ public class AsyncWorld extends AbstractWorldWrapper {
                     return false;
                 }
 
-                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)
-                        || m_parent.setBlockType(v, i);
+                boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true);
+                if (!result) {
+                    batcher.clearPending(m_bukkitWorld, v);
+                    result = m_parent.setBlockType(v, i);
+                }
                 if (result) {
                     logBlock(v, player, oldBlock, newBlock);
                 }
@@ -390,6 +398,7 @@ public class AsyncWorld extends AbstractWorldWrapper {
                 }
 
                 if (!batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)) {
+                    batcher.clearPending(m_bukkitWorld, v);
                     m_parent.setBlockData(v, i);
                 }
                 logBlock(v, player, oldBlock, newBlock);
@@ -427,8 +436,11 @@ public class AsyncWorld extends AbstractWorldWrapper {
                     return false;
                 }
 
-                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)
-                        || m_parent.setTypeIdAndData(v, i, i1);
+                boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true);
+                if (!result) {
+                    batcher.clearPending(m_bukkitWorld, v);
+                    result = m_parent.setTypeIdAndData(v, i, i1);
+                }
                 if (result) {
                     logBlock(v, player, oldBlock, newBlock);
                 }
@@ -630,10 +642,13 @@ public class AsyncWorld extends AbstractWorldWrapper {
             @Override
             public void execute() {
                 BaseBlock air = new BaseBlock(0);
-                BaseBlock oldBlock = ChunkBatchWriter.getInstance().getBlock(m_parent, m_bukkitWorld, v);
+                final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
+                BaseBlock oldBlock = batcher.getBlock(m_parent, m_bukkitWorld, v);
                 if (!canPlace(player, m_bukkitWorld, v, oldBlock, air) || isSame(oldBlock, air)) {
                     return;
                 }
+                //Classic path write - drop any stale pending block here
+                batcher.clearPending(m_bukkitWorld, v);
                 m_parent.simulateBlockMine(v);
             }
         };
@@ -1046,17 +1061,17 @@ public class AsyncWorld extends AbstractWorldWrapper {
         return m_dispatcher.performSafe(MutexProvider.getMutex(getWorld()), new IFunc<BaseBlock>() {
             @Override
             public BaseBlock execute() {
-                return m_parent.getBlock(vector);
+                return ChunkBatchWriter.getInstance().getBlock(m_parent, m_bukkitWorld, vector);
             }
         }, m_bukkitWorld, vector);
     }
-    
+
     @Override
     public BaseBlock getLazyBlock(final Vector vector) {
         return m_dispatcher.performSafeChunk(MutexProvider.getMutex(getWorld()), new IFunc<BaseBlock>() {
             @Override
             public BaseBlock execute() {
-                return m_parent.getLazyBlock(vector);
+                return ChunkBatchWriter.getInstance().getLazyBlock(m_parent, m_bukkitWorld, vector);
             }
         }, m_bukkitWorld, PositionHelper.positionToChunk(vector));
     }
@@ -1081,8 +1096,11 @@ public class AsyncWorld extends AbstractWorldWrapper {
                     return false;
                 }
 
-                final boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true)
-                        || m_parent.setBlock(vector, newBlock);
+                boolean result = batcher.trySetBlock(m_parent, m_bukkitWorld, v, newBlock, true);
+                if (!result) {
+                    batcher.clearPending(m_bukkitWorld, v);
+                    result = m_parent.setBlock(vector, newBlock);
+                }
                 if (result) {
                     logBlock(vector, player, oldBlock, newBlock);
                 }

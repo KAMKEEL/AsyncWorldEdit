@@ -47,6 +47,8 @@
  */
 package org.primesoft.asyncworldedit.chunkbatch;
 
+import java.util.ArrayList;
+import java.util.List;
 import static org.junit.Assert.*;
 import org.junit.Test;
 
@@ -147,5 +149,84 @@ public class PendingChunkTest {
         assertEquals(SectionMath.EMPTY_SLOT, chunk.getPendingSlot(1, 256, 1));
         assertEquals(SectionMath.EMPTY_SLOT, chunk.getPendingSlotLocal(16, 64, 0));
         assertEquals(SectionMath.EMPTY_SLOT, chunk.getPendingSlotLocal(-1, 64, 0));
+    }
+
+    /**
+     * Records the replay order as "x,y,z:id" strings
+     */
+    private static List<String> replay(PendingChunk chunk) {
+        final List<String> order = new ArrayList<String>();
+        chunk.forEachLastWriteOrder(new PendingChunk.IPendingBlockVisitor() {
+            @Override
+            public void visit(int x, int y, int z, int id, int data, boolean notify) {
+                order.add(x + "," + y + "," + z + ":" + id);
+            }
+        });
+        return order;
+    }
+
+    @Test
+    public void replayFollowsInsertionOrderNotCoordinateOrder() {
+        PendingChunk chunk = new PendingChunk(0, 0);
+
+        //WorldEdit's reorder stage queues attachments AFTER their support:
+        //the wall (higher y, higher section index) is queued first, the
+        //torch (lower y) afterwards. A coordinate order (y-major) replay
+        //would place the torch first and physics would pop it off.
+        assertTrue(chunk.setBlock(5, 70, 5, 4, 0, true));   //support (wall)
+        assertTrue(chunk.setBlock(5, 64, 5, 50, 1, true));  //attachment (torch)
+        //Same pattern across a section boundary
+        assertTrue(chunk.setBlock(8, 30, 8, 4, 0, true));   //support, section 1
+        assertTrue(chunk.setBlock(8, 12, 8, 65, 2, true));  //attachment, section 0
+
+        List<String> order = replay(chunk);
+        assertEquals(4, order.size());
+        assertEquals("5,70,5:4", order.get(0));
+        assertEquals("5,64,5:50", order.get(1));
+        assertEquals("8,30,8:4", order.get(2));
+        assertEquals("8,12,8:65", order.get(3));
+    }
+
+    @Test
+    public void replayUsesFinalValueAtLastWriteSequence() {
+        PendingChunk chunk = new PendingChunk(0, 0);
+
+        //P is written, then Q, then P is REWRITTEN: the replay must place
+        //Q first and P once, with its final value, at the sequence of its
+        //last write - never the stale first value at the early sequence
+        assertTrue(chunk.setBlock(1, 64, 1, 1, 0, true));   //P = stone
+        assertTrue(chunk.setBlock(2, 64, 2, 20, 0, true));  //Q = glass
+        assertTrue(chunk.setBlock(1, 64, 1, 89, 0, true));  //P = glowstone
+
+        List<String> order = replay(chunk);
+        assertEquals(2, order.size());
+        assertEquals("2,64,2:20", order.get(0));
+        assertEquals("1,64,1:89", order.get(1));
+        assertEquals(2, chunk.getCount());
+    }
+
+    @Test
+    public void clearRemovesPendingBlock() {
+        PendingChunk chunk = new PendingChunk(0, 0);
+        assertTrue(chunk.setBlock(3, 64, 3, 1, 0, true));
+        assertTrue(chunk.setBlock(4, 64, 4, 2, 0, true));
+        assertEquals(2, chunk.getCount());
+
+        //Clearing a position with no pending block changes nothing
+        assertFalse(chunk.clear(5, 64, 5));
+        assertFalse(chunk.clear(3, 300, 3));
+        assertFalse(chunk.clear(17, 64, 3));
+        assertEquals(2, chunk.getCount());
+
+        assertTrue(chunk.clear(3, 64, 3));
+        assertFalse("second clear must be a no-op", chunk.clear(3, 64, 3));
+
+        assertEquals(1, chunk.getCount());
+        assertEquals(SectionMath.EMPTY_SLOT, chunk.getPendingSlot(3, 64, 3));
+
+        //The cleared position must not be replayed
+        List<String> order = replay(chunk);
+        assertEquals(1, order.size());
+        assertEquals("4,64,4:2", order.get(0));
     }
 }

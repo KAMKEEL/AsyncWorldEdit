@@ -52,6 +52,7 @@ import com.sk89q.worldedit.WorldEditException;
 import com.sk89q.worldedit.blocks.BaseBlock;
 import com.sk89q.worldedit.world.World;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,6 +99,20 @@ public class ChunkBatchWriter {
 
     public static ChunkBatchWriter getInstance() {
         return s_instance;
+    }
+
+    /**
+     * Time allowance callback for a budgeted flush: chunks are flushed one
+     * at a time and the flush stops (carrying the rest over to the next
+     * placer run) once the allowance is used up. At least one chunk is
+     * always flushed so carried batches can never starve.
+     */
+    public interface IFlushLimit {
+
+        /**
+         * @return true while there is time allowance left
+         */
+        boolean shouldContinue();
     }
 
     /**
@@ -157,6 +172,13 @@ public class ChunkBatchWriter {
     private volatile Thread m_windowThread;
 
     /**
+     * The thread that owns batches carried over from a budget limited
+     * flush (the main thread), null when nothing is carried over. Keeps
+     * the read overlay and clearPending alive between placer runs.
+     */
+    private volatile Thread m_carryOverThread;
+
+    /**
      * Pending blocks per world name, only touched inside the window
      */
     private final Map<String, WorldBatch> m_batches = new HashMap<String, WorldBatch>();
@@ -165,6 +187,11 @@ public class ChunkBatchWriter {
      * Classic replay error was logged already
      */
     private boolean m_replayErrorLogged;
+
+    /**
+     * Chunk flush error was logged already
+     */
+    private boolean m_flushErrorLogged;
 
     ChunkBatchWriter() {
     }
@@ -216,6 +243,14 @@ public class ChunkBatchWriter {
         m_probeAttempted = true;
         try {
             NmsHandles handles = NmsProbe.probe(worlds.get(0).getClass());
+
+            String sanityError = sanityCheckLoadedChunk(worlds.get(0), handles);
+            if (sanityError != null) {
+                log("Direct chunk placement not available: " + sanityError
+                        + " - falling back to classic block placement.");
+                return;
+            }
+
             m_nmsWriter = new NmsChunkWriter(handles);
             log(String.format(
                     "Direct chunk placement active (%s section layout, min %d blocks per chunk).",
@@ -232,35 +267,137 @@ public class ChunkBatchWriter {
     }
 
     /**
+     * Best effort sanity check of the detected section layout against a
+     * loaded chunk: the id array of a live section must have the expected
+     * 4096 entries. When no loaded chunk with a live section is found the
+     * check is repeated by the NMS writer on the first flush.
+     *
+     * @return an error description when the layout check failed, null
+     * when it passed or could not run
+     */
+    private static String sanityCheckLoadedChunk(org.bukkit.World world, NmsHandles handles) {
+        try {
+            org.bukkit.Chunk[] loaded = world.getLoadedChunks();
+            if (loaded == null || loaded.length == 0) {
+                return null;
+            }
+
+            Object handle = handles.worldGetHandle.invoke(world);
+            Object chunk = handles.getChunk.invoke(handle,
+                    loaded[0].getX(), loaded[0].getZ());
+            Object[] sections = (Object[]) handles.getSections.invoke(chunk);
+            for (Object section : sections) {
+                if (section == null) {
+                    continue;
+                }
+                return NmsChunkWriter.checkSectionArrays(section, handles);
+            }
+        } catch (Throwable ex) {
+            //Could not run the check here - the writer verifies the first
+            //live section it touches and disables cleanly on mismatch
+        }
+        return null;
+    }
+
+    /**
      * Open the batching window. Must be called from the main thread by
-     * the block placer before it starts draining the queues.
+     * the block placer before it starts draining the queues. Also opens
+     * when batches were carried over from the previous run so those can
+     * be flushed even after a runtime disable.
      */
     public void openWindow() {
         if (m_enabled && !m_probeAttempted) {
             probe();
         }
 
-        if (isActive()) {
+        if (isActive() || hasCarryOver()) {
             m_windowThread = Thread.currentThread();
+            m_carryOverThread = null;
         }
     }
 
     /**
-     * Flush and close the batching window
+     * Flush everything and close the batching window
      */
     public void closeWindow() {
+        closeWindow(null);
+    }
+
+    /**
+     * Flush and close the batching window. When a flush limit is given the
+     * flush stops once the time allowance is used up (at least one chunk
+     * is always flushed) and the remaining chunks carry over to the next
+     * placer run; the read overlay stays alive for them.
+     *
+     * @param limit the flush time allowance, null for a full flush
+     */
+    public void closeWindow(IFlushLimit limit) {
         if (!isWindowOpenOnThisThread()) {
             return;
         }
         try {
-            flush();
+            flushInternal(limit);
         } finally {
             m_windowThread = null;
+            m_carryOverThread = m_batches.isEmpty() ? null : Thread.currentThread();
+        }
+    }
+
+    /**
+     * True when a budget limited flush left chunks behind for the next
+     * placer run
+     */
+    public boolean hasCarryOver() {
+        if (m_batches.isEmpty()) {
+            return false;
+        }
+        for (WorldBatch batch : m_batches.values()) {
+            if (!batch.chunks.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Fully flush all pending blocks, even when no window is open (claims
+     * the window temporarily). Used on shutdown and reload so carried
+     * over batches are never lost. Must be called from the thread that
+     * owns the batches (the server main thread).
+     */
+    public void forceFlush() {
+        if (isWindowOpenOnThisThread()) {
+            flush();
+            return;
+        }
+
+        if (m_windowThread != null || m_batches.isEmpty()) {
+            //Another thread owns the window or there is nothing to do
+            return;
+        }
+
+        m_windowThread = Thread.currentThread();
+        try {
+            flushInternal(null);
+        } finally {
+            m_windowThread = null;
+            m_carryOverThread = m_batches.isEmpty() ? null : Thread.currentThread();
         }
     }
 
     private boolean isWindowOpenOnThisThread() {
         return m_windowThread == Thread.currentThread();
+    }
+
+    /**
+     * True when this thread may see (and must maintain) the pending block
+     * overlay: the window is open on this thread, or this thread owns
+     * batches carried over between placer runs.
+     */
+    private boolean isOverlayVisibleToThisThread() {
+        final Thread current = Thread.currentThread();
+        return m_windowThread == current
+                || (m_windowThread == null && m_carryOverThread == current);
     }
 
     /**
@@ -306,97 +443,215 @@ public class ChunkBatchWriter {
     }
 
     /**
-     * Read a block with read-your-writes semantics: inside the window a
-     * position with a pending block returns the pending block, everything
-     * else is read from the world.
+     * Remove the pending block at a position. Must be called before every
+     * classic path world write inside the window (or while batches are
+     * carried over): the classic write would otherwise be overwritten by
+     * the stale pending value on flush, and the tile entity cleanup would
+     * delete its tile.
+     */
+    public void clearPending(IWorld bukkitWorld, Vector location) {
+        if (!isOverlayVisibleToThisThread() || bukkitWorld == null || location == null) {
+            return;
+        }
+
+        WorldBatch batch = m_batches.get(bukkitWorld.getName());
+        if (batch == null) {
+            return;
+        }
+
+        final int x = location.getBlockX();
+        final int z = location.getBlockZ();
+        final long key = SectionMath.chunkKey(
+                SectionMath.blockToChunk(x), SectionMath.blockToChunk(z));
+
+        PendingChunk chunk = batch.chunks.get(key);
+        if (chunk == null) {
+            return;
+        }
+
+        chunk.clear(x, location.getBlockY(), z);
+        if (chunk.getCount() == 0) {
+            batch.chunks.remove(key);
+            if (batch.chunks.isEmpty()) {
+                m_batches.remove(bukkitWorld.getName());
+            }
+        }
+    }
+
+    /**
+     * The pending slot for a position, {@link SectionMath#EMPTY_SLOT} when
+     * the overlay is not visible to this thread or nothing is pending
+     */
+    private int pendingSlot(IWorld bukkitWorld, Vector location) {
+        if (!isOverlayVisibleToThisThread() || bukkitWorld == null || location == null) {
+            return SectionMath.EMPTY_SLOT;
+        }
+
+        WorldBatch batch = m_batches.get(bukkitWorld.getName());
+        if (batch == null) {
+            return SectionMath.EMPTY_SLOT;
+        }
+
+        final int x = location.getBlockX();
+        final int z = location.getBlockZ();
+        PendingChunk chunk = batch.chunks.get(SectionMath.chunkKey(
+                SectionMath.blockToChunk(x), SectionMath.blockToChunk(z)));
+        if (chunk == null) {
+            return SectionMath.EMPTY_SLOT;
+        }
+
+        return chunk.getPendingSlot(x, location.getBlockY(), z);
+    }
+
+    /**
+     * Read a block with read-your-writes semantics: a position with a
+     * pending block returns the pending block, everything else is read
+     * from the world.
      */
     public BaseBlock getBlock(World parent, IWorld bukkitWorld, Vector location) {
-        if (isWindowOpenOnThisThread() && bukkitWorld != null && location != null) {
-            WorldBatch batch = m_batches.get(bukkitWorld.getName());
-            if (batch != null) {
-                final int x = location.getBlockX();
-                final int z = location.getBlockZ();
-                PendingChunk chunk = batch.chunks.get(SectionMath.chunkKey(
-                        SectionMath.blockToChunk(x), SectionMath.blockToChunk(z)));
-                if (chunk != null) {
-                    int slot = chunk.getPendingSlot(x, location.getBlockY(), z);
-                    if (slot != SectionMath.EMPTY_SLOT) {
-                        return new BaseBlock(SectionMath.slotId(slot),
-                                SectionMath.slotData(slot));
-                    }
-                }
-            }
+        int slot = pendingSlot(bukkitWorld, location);
+        if (slot != SectionMath.EMPTY_SLOT) {
+            return new BaseBlock(SectionMath.slotId(slot), SectionMath.slotData(slot));
         }
 
         return parent.getBlock(location);
     }
 
     /**
-     * Flush all pending blocks. Called at the end of every block placer
-     * run and before demanding entries so those never see stale chunk
-     * data. Main thread only.
+     * Read a block id with read-your-writes semantics
+     */
+    public int getBlockType(World parent, IWorld bukkitWorld, Vector location) {
+        int slot = pendingSlot(bukkitWorld, location);
+        if (slot != SectionMath.EMPTY_SLOT) {
+            return SectionMath.slotId(slot);
+        }
+
+        return parent.getBlockType(location);
+    }
+
+    /**
+     * Read a block metadata value with read-your-writes semantics
+     */
+    public int getBlockData(World parent, IWorld bukkitWorld, Vector location) {
+        int slot = pendingSlot(bukkitWorld, location);
+        if (slot != SectionMath.EMPTY_SLOT) {
+            return SectionMath.slotData(slot);
+        }
+
+        return parent.getBlockData(location);
+    }
+
+    /**
+     * Read a lazy block with read-your-writes semantics
+     */
+    public BaseBlock getLazyBlock(World parent, IWorld bukkitWorld, Vector location) {
+        int slot = pendingSlot(bukkitWorld, location);
+        if (slot != SectionMath.EMPTY_SLOT) {
+            return new BaseBlock(SectionMath.slotId(slot), SectionMath.slotData(slot));
+        }
+
+        return parent.getLazyBlock(location);
+    }
+
+    /**
+     * Flush all pending blocks. Called before demanding entries (those
+     * must see the world with all batched blocks applied), on shutdown
+     * and on reload. Main thread only.
      */
     public void flush() {
+        flushInternal(null);
+    }
+
+    /**
+     * Flush pending chunks one at a time. Every chunk is removed from the
+     * batch before it is written, and a failing chunk never stops the
+     * remaining ones (per chunk catch). With a flush limit the loop stops
+     * once the allowance is used up - at least one chunk always gets
+     * flushed - and the rest stays in {@link #m_batches} to carry over.
+     */
+    private void flushInternal(IFlushLimit limit) {
         if (!isWindowOpenOnThisThread() || m_batches.isEmpty()) {
             return;
         }
 
-        for (WorldBatch batch : m_batches.values()) {
-            for (PendingChunk chunk : batch.chunks.values()) {
-                NmsChunkWriter nmsWriter = m_nmsWriter;
+        boolean first = true;
+        final Iterator<WorldBatch> worldIterator = m_batches.values().iterator();
+        while (worldIterator.hasNext()) {
+            final WorldBatch batch = worldIterator.next();
 
-                if (nmsWriter != null && !m_runtimeDisabled
-                        && chunk.getCount() >= m_minBlocksPerChunk) {
-                    try {
-                        List<NmsChunkWriter.OverflowBlock> overflow
-                                = nmsWriter.apply(batch.bukkit, chunk);
-                        for (NmsChunkWriter.OverflowBlock block : overflow) {
-                            classicPlace(batch.parent, block.x, block.y, block.z,
-                                    block.id, block.data, block.notify);
-                        }
-                        continue;
-                    } catch (Throwable ex) {
-                        m_runtimeDisabled = true;
-                        log("Direct chunk placement failed (" + ex
-                                + "), switching to classic block placement permanently.");
-                    }
+            final Iterator<PendingChunk> chunkIterator = batch.chunks.values().iterator();
+            while (chunkIterator.hasNext()) {
+                if (!first && limit != null && !limit.shouldContinue()) {
+                    //Budget used up - the remaining chunks carry over
+                    return;
                 }
 
-                classicPlaceChunk(batch.parent, chunk);
+                final PendingChunk chunk = chunkIterator.next();
+                //Remove before processing: a failing chunk must never
+                //survive to the next window (stale overlay, double apply)
+                chunkIterator.remove();
+                first = false;
+
+                try {
+                    flushChunk(batch, chunk);
+                } catch (Throwable ex) {
+                    if (!m_flushErrorLogged) {
+                        m_flushErrorLogged = true;
+                        log(String.format(
+                                "Error while flushing batched chunk %d,%d: %s",
+                                chunk.getX(), chunk.getZ(), ex));
+                    }
+                }
+            }
+
+            if (batch.chunks.isEmpty()) {
+                worldIterator.remove();
             }
         }
-
-        m_batches.clear();
     }
 
     /**
-     * Replay a whole pending chunk through the classic per block path
+     * Flush a single pending chunk: direct NMS section write when the
+     * chunk qualifies, classic per block replay otherwise
      */
-    private void classicPlaceChunk(World parent, PendingChunk chunk) {
-        final int bx = chunk.getX() << 4;
-        final int bz = chunk.getZ() << 4;
+    private void flushChunk(WorldBatch batch, PendingChunk chunk) {
+        final NmsChunkWriter nmsWriter = m_nmsWriter;
 
-        for (int s = 0; s < SectionMath.SECTIONS_PER_CHUNK; s++) {
-            PendingSection section = chunk.getSection(s);
-            if (section == null) {
-                continue;
-            }
-
-            final int sy = s << 4;
-            for (int index = 0; index < SectionMath.SECTION_SIZE; index++) {
-                int slot = section.getSlot(index);
-                if (slot == SectionMath.EMPTY_SLOT) {
-                    continue;
+        if (nmsWriter != null && !m_runtimeDisabled
+                && chunk.getCount() >= m_minBlocksPerChunk) {
+            try {
+                List<NmsChunkWriter.OverflowBlock> overflow
+                        = nmsWriter.apply(batch.bukkit, chunk);
+                for (NmsChunkWriter.OverflowBlock block : overflow) {
+                    classicPlace(batch.parent, block.x, block.y, block.z,
+                            block.id, block.data, block.notify);
                 }
-
-                classicPlace(parent,
-                        bx + SectionMath.indexToX(index),
-                        sy + SectionMath.indexToY(index),
-                        bz + SectionMath.indexToZ(index),
-                        SectionMath.slotId(slot), SectionMath.slotData(slot),
-                        SectionMath.slotNotify(slot));
+                return;
+            } catch (Throwable ex) {
+                m_runtimeDisabled = true;
+                log("Direct chunk placement failed (" + ex
+                        + "), switching to classic block placement permanently.");
             }
         }
+
+        classicPlaceChunk(batch.parent, chunk);
+    }
+
+    /**
+     * Replay a whole pending chunk through the classic per block path.
+     * The replay places the final value of every position, ordered by the
+     * sequence of each position's last write: WorldEdit's reorder stage
+     * queues attachments (torches, levers, rails) after their supports,
+     * so a coordinate order replay would fire physics on an unsupported
+     * attachment and pop it off.
+     */
+    private void classicPlaceChunk(final World parent, PendingChunk chunk) {
+        chunk.forEachLastWriteOrder(new PendingChunk.IPendingBlockVisitor() {
+            @Override
+            public void visit(int x, int y, int z, int id, int data, boolean notify) {
+                classicPlace(parent, x, y, z, id, data, notify);
+            }
+        });
     }
 
     private void classicPlace(World parent, int x, int y, int z,
@@ -416,5 +671,18 @@ public class ChunkBatchWriter {
             return ((IBukkitWorld) world).getWorld();
         }
         return null;
+    }
+
+    /**
+     * Test seam: enable the writer with a given minimum batch size and
+     * NMS writer without running the Bukkit probe. Package private, only
+     * for unit tests on fresh (non singleton) instances.
+     */
+    void configureForTest(int minBlocksPerChunk, NmsChunkWriter nmsWriter) {
+        m_enabled = true;
+        m_probeAttempted = true;
+        m_runtimeDisabled = false;
+        m_minBlocksPerChunk = Math.max(1, minBlocksPerChunk);
+        m_nmsWriter = nmsWriter;
     }
 }

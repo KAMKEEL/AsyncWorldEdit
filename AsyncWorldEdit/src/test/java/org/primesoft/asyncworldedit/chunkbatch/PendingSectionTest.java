@@ -114,6 +114,45 @@ public class PendingSectionTest {
     }
 
     @Test
+    public void clearKeepsBookkeepingExact() {
+        PendingSection section = new PendingSection();
+        section.set(100, 35, 2, true, 7);
+        section.set(101, 0, 0, false, 8);
+        assertEquals(2, section.getCount());
+        assertEquals(1, section.getNonAirCount());
+        assertEquals(7, section.getSeq(100));
+        assertEquals(8, section.getSeq(101));
+
+        //Clearing an empty slot is a no-op
+        assertFalse(section.clear(102));
+        assertEquals(2, section.getCount());
+
+        //Clear the non air block
+        assertTrue(section.clear(100));
+        assertFalse("second clear must be a no-op", section.clear(100));
+        assertEquals(1, section.getCount());
+        assertEquals(0, section.getNonAirCount());
+        assertEquals(SectionMath.EMPTY_SLOT, section.getSlot(100));
+
+        //Clear the air block
+        assertTrue(section.clear(101));
+        assertEquals(0, section.getCount());
+        assertEquals(0, section.getNonAirCount());
+    }
+
+    @Test
+    public void sequenceFollowsLastWrite() {
+        PendingSection section = new PendingSection();
+        section.set(100, 1, 0, false, 3);
+        assertEquals(3, section.getSeq(100));
+
+        //A rewrite moves the slot to the new sequence
+        section.set(100, 2, 0, false, 9);
+        assertEquals(9, section.getSeq(100));
+        assertEquals(2, SectionMath.slotId(section.getSlot(100)));
+    }
+
+    @Test
     public void needsMsb() {
         PendingSection section = new PendingSection();
         assertFalse(section.needsMsb());

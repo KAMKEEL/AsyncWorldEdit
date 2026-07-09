@@ -273,6 +273,8 @@ public class BlockPlacer implements IBlockPlacer {
             m_task.queueStop();
         }
 
+        //Reload may disable the feature - flush carried over batches first
+        ChunkBatchWriter.getInstance().forceFlush();
         ChunkBatchWriter.getInstance().configure(rConfig.isDirectChunkEnabled(),
                 rConfig.getDirectChunkMinBlocksPerChunk());
 
@@ -369,6 +371,10 @@ public class BlockPlacer implements IBlockPlacer {
         }
 
         if (task.isShutingDown()) {
+            //Never lose batched blocks carried over from a previous run:
+            //flush them fully, ignoring the tick budget
+            ChunkBatchWriter.getInstance().forceFlush();
+
             IPlayerEntry[] entries;
             synchronized (m_mutex) {
                 entries = m_blocks.keySet().toArray(new IPlayerEntry[0]);
@@ -397,7 +403,10 @@ public class BlockPlacer implements IBlockPlacer {
             }
         }
         
-        boolean blockPlaced = !groups.isEmpty() && processQueue(processedGroups, blocksPlaced, jobsToCancel);
+        //Run the queue drain also when only carried over batches are left:
+        //processQueue flushes those in its window even with empty queues
+        boolean blockPlaced = (!groups.isEmpty() || ChunkBatchWriter.getInstance().hasCarryOver())
+                && processQueue(processedGroups, blocksPlaced, jobsToCancel);
 
         if (m_globalQueueLocked) {
             boolean unlock = GCUtils.getTotalAvailableMemory() >= m_minMemorySoft;
@@ -508,8 +517,17 @@ public class BlockPlacer implements IBlockPlacer {
                 }
             }
         } finally {
-            //Write all batched blocks in this run (direct chunk placement)
-            batchWriter.closeWindow();
+            //Write the batched blocks of this run (direct chunk placement).
+            //The flush is metered by the same tick budget as the entry
+            //processing: chunks are flushed one at a time and once the
+            //budget is used up the remaining chunks carry over to the next
+            //placer run (at least one chunk is always flushed).
+            batchWriter.closeWindow(new ChunkBatchWriter.IFlushLimit() {
+                @Override
+                public boolean shouldContinue() {
+                    return m_tickBudget.shouldContinue(System.nanoTime() - startNanos);
+                }
+            });
         }
 
         if (ConfigProvider.messages().isDebugOn()) {
@@ -606,6 +624,10 @@ public class BlockPlacer implements IBlockPlacer {
      */
     public void stop() {
         m_task.stop();
+
+        //Plugin disable: batched blocks carried over between runs must be
+        //written out now or they are lost
+        ChunkBatchWriter.getInstance().forceFlush();
 
         BlockPlacerPlayer[] entries;
         synchronized (m_mutex) {

@@ -55,6 +55,22 @@ package org.primesoft.asyncworldedit.chunkbatch;
  */
 public final class PendingChunk {
 
+    /**
+     * Visitor for {@link PendingChunk#forEachLastWriteOrder}
+     */
+    public interface IPendingBlockVisitor {
+
+        /**
+         * @param x world x coordinate
+         * @param y world y coordinate
+         * @param z world z coordinate
+         * @param id the block id
+         * @param data the block metadata
+         * @param notify the notify flag the block was queued with
+         */
+        void visit(int x, int y, int z, int id, int data, boolean notify);
+    }
+
     private final int m_cx;
 
     private final int m_cz;
@@ -68,6 +84,12 @@ public final class PendingChunk {
      * Total number of pending blocks in this chunk
      */
     private int m_count;
+
+    /**
+     * Monotonic write sequence, used to keep insertion order for the
+     * classic replay of small batches
+     */
+    private int m_writeSeq;
 
     public PendingChunk(int cx, int cz) {
         m_cx = cx;
@@ -118,10 +140,90 @@ public final class PendingChunk {
         }
 
         int before = section.getCount();
-        section.set(SectionMath.sectionIndex(x, y, z), id, data, notify);
+        section.set(SectionMath.sectionIndex(x, y, z), id, data, notify, m_writeSeq++);
         m_count += section.getCount() - before;
 
         return true;
+    }
+
+    /**
+     * Remove the pending block at a world position (a classic path write
+     * is about to overwrite it, the stale pending value must not be
+     * flushed over the classic write).
+     *
+     * @return true when a pending block was removed
+     */
+    public boolean clear(int x, int y, int z) {
+        if (SectionMath.blockToChunk(x) != m_cx
+                || SectionMath.blockToChunk(z) != m_cz
+                || y < 0 || y > 255) {
+            return false;
+        }
+
+        PendingSection section = m_sections[SectionMath.sectionOfY(y)];
+        if (section == null) {
+            return false;
+        }
+
+        if (!section.clear(SectionMath.sectionIndex(x, y, z))) {
+            return false;
+        }
+
+        m_count--;
+        return true;
+    }
+
+    /**
+     * Visit every pending block with its final value, ordered by the
+     * sequence of each position's last write. This is the order the
+     * classic replay must use: WorldEdit's reorder stage queues
+     * attachments (torches, levers, rails) after their supports, so the
+     * replay has to place the support first. A position rewritten later
+     * in the window is visited at its last write position with its final
+     * value.
+     */
+    public void forEachLastWriteOrder(IPendingBlockVisitor visitor) {
+        if (m_count <= 0) {
+            return;
+        }
+
+        //Encode (seq << 16 | section << 12 | index) so a plain sort on the
+        //long values orders the pending blocks by their last write
+        final long[] entries = new long[m_count];
+        int n = 0;
+
+        for (int s = 0; s < SectionMath.SECTIONS_PER_CHUNK; s++) {
+            PendingSection section = m_sections[s];
+            if (section == null) {
+                continue;
+            }
+            for (int index = 0; index < SectionMath.SECTION_SIZE; index++) {
+                if (section.getSlot(index) == SectionMath.EMPTY_SLOT) {
+                    continue;
+                }
+                entries[n++] = ((long) section.getSeq(index) << 16)
+                        | ((long) s << 12) | index;
+            }
+        }
+
+        java.util.Arrays.sort(entries, 0, n);
+
+        final int bx = m_cx << 4;
+        final int bz = m_cz << 4;
+
+        for (int i = 0; i < n; i++) {
+            final long entry = entries[i];
+            final int s = (int) ((entry >> 12) & 0xF);
+            final int index = (int) (entry & 0xFFF);
+            final int slot = m_sections[s].getSlot(index);
+
+            visitor.visit(
+                    bx + SectionMath.indexToX(index),
+                    (s << 4) + SectionMath.indexToY(index),
+                    bz + SectionMath.indexToZ(index),
+                    SectionMath.slotId(slot), SectionMath.slotData(slot),
+                    SectionMath.slotNotify(slot));
+        }
     }
 
     /**

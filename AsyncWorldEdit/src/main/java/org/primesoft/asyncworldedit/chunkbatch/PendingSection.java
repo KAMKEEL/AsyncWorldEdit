@@ -100,6 +100,14 @@ public final class PendingSection {
     private final int[] m_slots;
 
     /**
+     * Sequence number of the last write per slot. Used to replay small
+     * batches through the classic path in insertion order (WorldEdit
+     * queues attachments after their supports; coordinate order replay
+     * would pop them off).
+     */
+    private final int[] m_seq;
+
+    /**
      * Number of used slots
      */
     private int m_count;
@@ -111,6 +119,7 @@ public final class PendingSection {
 
     public PendingSection() {
         m_slots = new int[SectionMath.SECTION_SIZE];
+        m_seq = new int[SectionMath.SECTION_SIZE];
         Arrays.fill(m_slots, SectionMath.EMPTY_SLOT);
     }
 
@@ -130,9 +139,20 @@ public final class PendingSection {
 
     /**
      * Store a pending block. Overwrites any previous pending block at the
-     * same index (last write wins).
+     * same index (last write wins). The sequence number defaults to 0;
+     * use {@link #set(int, int, int, boolean, int)} when insertion order
+     * replay matters.
      */
     public void set(int index, int id, int data, boolean notify) {
+        set(index, id, data, notify, 0);
+    }
+
+    /**
+     * Store a pending block. Overwrites any previous pending block at the
+     * same index (last write wins); the slot takes the sequence number of
+     * this (its last) write.
+     */
+    public void set(int index, int id, int data, boolean notify, int seq) {
         int old = m_slots[index];
         if (old == SectionMath.EMPTY_SLOT) {
             m_count++;
@@ -150,6 +170,28 @@ public final class PendingSection {
         }
 
         m_slots[index] = SectionMath.encodeSlot(id, data, notify);
+        m_seq[index] = seq;
+    }
+
+    /**
+     * Remove a pending block (a classic path write is about to overwrite
+     * this position, the stale pending value must not be flushed over it).
+     *
+     * @return true when a pending block was removed
+     */
+    public boolean clear(int index) {
+        int old = m_slots[index];
+        if (old == SectionMath.EMPTY_SLOT) {
+            return false;
+        }
+
+        m_count--;
+        if (SectionMath.slotId(old) != 0) {
+            m_nonAirCount--;
+        }
+        m_slots[index] = SectionMath.EMPTY_SLOT;
+        m_seq[index] = 0;
+        return true;
     }
 
     /**
@@ -158,6 +200,14 @@ public final class PendingSection {
      */
     public int getSlot(int index) {
         return m_slots[index];
+    }
+
+    /**
+     * The sequence number of the last write to an index (only meaningful
+     * when the slot is not empty)
+     */
+    public int getSeq(int index) {
+        return m_seq[index];
     }
 
     /**
