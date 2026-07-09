@@ -111,14 +111,10 @@ awe:
     log:
         #Enable block chang loggin
         isEnabled: true
-        #Enable block change loggin for Direct Chunk API
-        isDcEnabled: false
     #The block access control
     access:
         #Enable blocks access control
         isEnabled: false
-        #Enable blocks access control for Direct Chunk API
-        isDcEnabled: false
         #Allow NULL player to place blocks (used by some plugins)
         allowNull: false
         #Allow unknown player to place blocks
