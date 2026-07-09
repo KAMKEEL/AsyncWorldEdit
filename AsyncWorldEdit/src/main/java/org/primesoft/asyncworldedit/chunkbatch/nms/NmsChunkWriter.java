@@ -184,13 +184,23 @@ public class NmsChunkWriter {
             }
         }
 
-        Object metaNibble = handles.metaField.get(section);
-        if (metaNibble != null) {
-            byte[] meta = (byte[]) handles.nibbleDataField.get(metaNibble);
-            if (meta == null || meta.length != SectionMath.NIBBLE_SIZE) {
+        if (handles.meta16Field != null) {
+            short[] meta16 = (short[]) handles.meta16Field.get(section);
+            if (meta16 != null && meta16.length != SectionMath.SECTION_SIZE) {
                 return String.format(
-                        "section metadata array has %d bytes, expected %d",
-                        meta == null ? 0 : meta.length, SectionMath.NIBBLE_SIZE);
+                        "section metadata array %s has %d entries, expected %d",
+                        handles.meta16Field.getName(), meta16.length,
+                        SectionMath.SECTION_SIZE);
+            }
+        } else if (handles.metaField != null && handles.nibbleDataField != null) {
+            Object metaNibble = handles.metaField.get(section);
+            if (metaNibble != null) {
+                byte[] meta = (byte[]) handles.nibbleDataField.get(metaNibble);
+                if (meta == null || meta.length != SectionMath.NIBBLE_SIZE) {
+                    return String.format(
+                            "section metadata array has %d bytes, expected %d",
+                            meta == null ? 0 : meta.length, SectionMath.NIBBLE_SIZE);
+                }
             }
         }
 
@@ -305,8 +315,20 @@ public class NmsChunkWriter {
                     ids16 = new short[SectionMath.SECTION_SIZE];
                     m_handles.ids16Field.set(section, ids16);
                 }
-                byte[] meta = ensureMetaArray(section);
-                ps.applyId16(ids16, meta, changed, overflowVisitor);
+                if (m_handles.meta16Field != null) {
+                    //GTNH NEID: the metadata lives in a 16 bit short
+                    //array; the vanilla NibbleArray is dead - writing it
+                    //would silently drop every block's metadata
+                    short[] meta16 = (short[]) m_handles.meta16Field.get(section);
+                    if (meta16 == null) {
+                        meta16 = new short[SectionMath.SECTION_SIZE];
+                        m_handles.meta16Field.set(section, meta16);
+                    }
+                    ps.applyId16(ids16, meta16, changed, overflowVisitor);
+                } else {
+                    byte[] meta = ensureMetaArray(section);
+                    ps.applyId16(ids16, meta, changed, overflowVisitor);
+                }
             } else {
                 byte[] lsb = ensureVanillaIdArray(section);
                 if (lsb == null) {

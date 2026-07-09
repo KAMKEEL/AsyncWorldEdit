@@ -174,17 +174,27 @@ public final class NmsHandles {
     public final Field msbField;
 
     /**
-     * The metadata NibbleArray field
+     * The metadata NibbleArray field. May be null when {@link #meta16Field}
+     * is set (the vanilla nibble metadata is dead on GTNH NEID servers).
      */
     public final Field metaField;
 
     /**
-     * NibbleArray(int, int) constructor
+     * The GTNH NotEnoughIds 16 bit metadata short[] field
+     * (block16BMetaArray). When not null it is the ONLY authoritative
+     * metadata storage; the vanilla NibbleArray must not be written.
+     */
+    public final Field meta16Field;
+
+    /**
+     * NibbleArray(int, int) constructor, null when {@link #meta16Field}
+     * is set (no nibble machinery needed)
      */
     public final Constructor<?> nibbleCtor;
 
     /**
-     * NibbleArray.data / field_76585_a
+     * NibbleArray.data / field_76585_a, null when {@link #meta16Field}
+     * is set
      */
     public final Field nibbleDataField;
 
@@ -194,6 +204,7 @@ public final class NmsHandles {
             Method relight, Method blockGetById, Method blockGetLightValue,
             Layout layout, Constructor<?> sectionCtor, Method removeInvalidBlocks,
             Field ids16Field, Field lsbField, Field msbField, Field metaField,
+            Field meta16Field,
             Constructor<?> nibbleCtor, Field nibbleDataField) {
         this.worldGetHandle = worldGetHandle;
         this.getChunk = getChunk;
@@ -214,6 +225,7 @@ public final class NmsHandles {
         this.lsbField = lsbField;
         this.msbField = msbField;
         this.metaField = metaField;
+        this.meta16Field = meta16Field;
         this.nibbleCtor = nibbleCtor;
         this.nibbleDataField = nibbleDataField;
     }

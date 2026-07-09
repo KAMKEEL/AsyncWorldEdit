@@ -315,6 +315,48 @@ public class PendingSectionTest {
     }
 
     @Test
+    public void applyId16WideMetadataExactValues() {
+        //GTNH NotEnoughIds layout: metadata is a 16 bit short array
+        //(block16BMetaArray), NOT the vanilla nibble array
+        PendingSection section = new PendingSection();
+        short[] ids = new short[SectionMath.SECTION_SIZE];
+        short[] meta16 = new short[SectionMath.SECTION_SIZE];
+
+        //Pre-existing block that must be overwritten in BOTH arrays
+        ids[2] = (short) 40000;
+        meta16[2] = 9;
+
+        section.set(0, 16529, 5, false);
+        section.set(1, 0, 0, false);
+        section.set(2, 35, 14, true);
+
+        ChangeCollector changes = new ChangeCollector();
+        int written = section.applyId16(ids, meta16, changes, null);
+        assertEquals(3, written);
+
+        assertEquals(16529, ids[0] & 0xFFFF);
+        assertEquals(5, meta16[0]);
+        assertEquals(0, ids[1]);
+        assertEquals(0, meta16[1]);
+        assertEquals(35, ids[2]);
+        assertEquals("metadata must land in the 16 bit array", 14, meta16[2]);
+        //Untouched positions stay untouched
+        assertEquals(0, ids[3]);
+        assertEquals(0, meta16[3]);
+
+        //The changed visitor read the OLD id unsigned from the short array
+        boolean sawIndex2 = false;
+        for (int[] change : changes.changes) {
+            if (change[0] == 2) {
+                sawIndex2 = true;
+                assertEquals(40000, change[1]);
+                assertEquals(35, change[2]);
+            }
+        }
+        assertTrue(sawIndex2);
+    }
+
+    @Test
     public void applyId16NoTruncationOfExtendedIds() {
         //16529 is the mangrove trapdoor style id that used to be truncated
         //to 12 bits (16529 & 0xFFF = 145, an anvil) by the buggy readers

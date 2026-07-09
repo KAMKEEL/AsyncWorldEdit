@@ -116,6 +116,24 @@ public class NmsChunkWriterTest {
         assertTrue(error.contains("2048"));
     }
 
+    @Test
+    public void sectionCheckValidatesGtnhWideMetadata() throws Exception {
+        NmsHandles handles = NmsProbe.probe(NmsProbeTest.FakeCraftWorldNeidGtnh.class);
+        NmsProbeTest.FakeSectionNeidGtnh section
+                = new NmsProbeTest.FakeSectionNeidGtnh(0, true);
+
+        //Healthy GTNH NEID section (both short arrays 4096 long)
+        assertNull(NmsChunkWriter.checkSectionArrays(section, handles));
+
+        //A wrong length 16 bit metadata array must be refused before the
+        //first write
+        section.block16BMetaArray = new short[64];
+        String error = NmsChunkWriter.checkSectionArrays(section, handles);
+        assertNotNull(error);
+        assertTrue(error.contains("4096"));
+        assertTrue(error.contains("block16BMetaArray"));
+    }
+
     //---------------------------------------------------------------------
     //Spigot 1.7.10 compact section support: uniform sections keep a null
     //id array plus compactId/compactData bytes (FAWE's BukkitQueue17

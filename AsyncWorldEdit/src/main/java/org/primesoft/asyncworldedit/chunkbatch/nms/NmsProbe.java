@@ -122,6 +122,14 @@ public final class NmsProbe {
     private static final String[] LSB_ARRAY = {
         "field_76679_d", "blockLSBArray", "blockIds"};
 
+    /**
+     * The GTNH NotEnoughIds 16 bit metadata array (2.x mixin field). When
+     * present the vanilla metadata NibbleArray is dead and this array is
+     * the only authoritative metadata storage.
+     */
+    private static final String[] META16_ARRAY = {
+        "block16BMetaArray"};
+
     private static final String[] BLOCK_CLASS = {
         "net.minecraft.block.Block", "net.minecraft.server.v1_7_R4.Block"};
 
@@ -260,29 +268,7 @@ public final class NmsProbe {
             }
         }
 
-        Field metaField = findField(sectionClass, META_ARRAY, null, "section metadata array");
-        Class<?> nibbleClass = metaField.getType();
-        if (nibbleClass.isPrimitive() || nibbleClass.isArray()) {
-            throw new ProbeException("section metadata field is not a NibbleArray");
-        }
-
-        Field nibbleDataField = null;
-        for (Field field : nibbleClass.getDeclaredFields()) {
-            if (field.getType() == byte[].class) {
-                if (nibbleDataField != null) {
-                    throw new ProbeException("NibbleArray has more than one byte[] field");
-                }
-                nibbleDataField = field;
-            }
-        }
-        if (nibbleDataField == null) {
-            throw new ProbeException("NibbleArray data byte[] field not found in "
-                    + nibbleClass.getName());
-        }
-        nibbleDataField.setAccessible(true);
-
         final NmsHandles.Layout layout;
-        Field msbField = null;
         if (ids16Field != null) {
             layout = NmsHandles.Layout.ID16;
             ids16Field.setAccessible(true);
@@ -293,7 +279,62 @@ public final class NmsProbe {
             }
             layout = NmsHandles.Layout.VANILLA;
             lsbField.setAccessible(true);
-            msbField = findField(sectionClass, MSB_ARRAY, nibbleClass, "section MSB id array");
+        }
+
+        //Metadata storage. GTNH NotEnoughIds (2.x) widens the metadata to a
+        //16 bit short[] (block16BMetaArray) and leaves the vanilla
+        //NibbleArray in place but DEAD (never read again) - writing the
+        //nibble array on such a server silently drops every block's
+        //metadata. The original fewizz NEID and vanilla keep the metadata
+        //in the NibbleArray.
+        Field meta16Field = null;
+        if (layout == NmsHandles.Layout.ID16) {
+            meta16Field = findFieldOrNull(sectionClass, META16_ARRAY, short[].class);
+            if (meta16Field != null) {
+                meta16Field.setAccessible(true);
+            }
+        }
+
+        Field metaField;
+        Field nibbleDataField = null;
+        Constructor<?> nibbleCtor = null;
+        Field msbField = null;
+
+        if (meta16Field != null) {
+            //16 bit metadata is authoritative; the nibble machinery is not
+            //needed (the vanilla metadata field may even disappear in a
+            //future NEID version)
+            metaField = findFieldOrNull(sectionClass, META_ARRAY, null);
+        } else {
+            metaField = findField(sectionClass, META_ARRAY, null, "section metadata array");
+            Class<?> nibbleClass = metaField.getType();
+            if (nibbleClass.isPrimitive() || nibbleClass.isArray()) {
+                throw new ProbeException("section metadata field is not a NibbleArray");
+            }
+
+            for (Field field : nibbleClass.getDeclaredFields()) {
+                if (field.getType() == byte[].class) {
+                    if (nibbleDataField != null) {
+                        throw new ProbeException("NibbleArray has more than one byte[] field");
+                    }
+                    nibbleDataField = field;
+                }
+            }
+            if (nibbleDataField == null) {
+                throw new ProbeException("NibbleArray data byte[] field not found in "
+                        + nibbleClass.getName());
+            }
+            nibbleDataField.setAccessible(true);
+
+            try {
+                nibbleCtor = nibbleClass.getConstructor(int.class, int.class);
+            } catch (NoSuchMethodException ex) {
+                throw new ProbeException("NibbleArray (int, int) constructor not found", ex);
+            }
+
+            if (layout == NmsHandles.Layout.VANILLA) {
+                msbField = findField(sectionClass, MSB_ARRAY, nibbleClass, "section MSB id array");
+            }
         }
 
         Constructor<?> sectionCtor;
@@ -301,13 +342,6 @@ public final class NmsProbe {
             sectionCtor = sectionClass.getConstructor(int.class, boolean.class);
         } catch (NoSuchMethodException ex) {
             throw new ProbeException("section (int, boolean) constructor not found", ex);
-        }
-
-        Constructor<?> nibbleCtor;
-        try {
-            nibbleCtor = nibbleClass.getConstructor(int.class, int.class);
-        } catch (NoSuchMethodException ex) {
-            throw new ProbeException("NibbleArray (int, int) constructor not found", ex);
         }
 
         Method removeInvalidBlocks = findMethod(sectionClass, REMOVE_INVALID_BLOCKS,
@@ -318,7 +352,7 @@ public final class NmsProbe {
                 tileEntityMapField, providerField, hasNoSkyField,
                 relight, blockGetById, blockGetLightValue,
                 layout, sectionCtor, removeInvalidBlocks,
-                ids16Field, lsbField, msbField, metaField,
+                ids16Field, lsbField, msbField, metaField, meta16Field,
                 nibbleCtor, nibbleDataField);
     }
 

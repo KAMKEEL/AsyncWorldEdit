@@ -177,6 +177,61 @@ public class NmsProbeTest {
     }
 
     //---------------------------------------------------------------------
+    //GTNH NotEnoughIds (2.x) hierarchy: the mixin adds BOTH a 16 bit id
+    //array (block16BArray) and a 16 bit metadata array (block16BMetaArray)
+    //to ExtendedBlockStorage. The vanilla byte[] LSB array and metadata
+    //NibbleArray remain DECLARED but are dead at runtime - the probe must
+    //pick the two short arrays and must not be confused by two short[]
+    //fields being present.
+    //---------------------------------------------------------------------
+    public static class FakeSectionNeidGtnh {
+
+        public short[] block16BArray = new short[4096];
+        public short[] block16BMetaArray = new short[4096];
+        public byte[] blockLSBArray = new byte[4096];
+        public FakeNibble blockMetadataArray = new FakeNibble(4096, 4);
+        public FakeNibble blocklightArray = new FakeNibble(4096, 4);
+        public FakeNibble skylightArray = new FakeNibble(4096, 4);
+
+        public FakeSectionNeidGtnh(int yBase, boolean hasSky) {
+        }
+
+        public void removeInvalidBlocks() {
+        }
+    }
+
+    public static class FakeChunkNeidGtnh {
+
+        public Map<Object, Object> chunkTileEntityMap = new HashMap<Object, Object>();
+
+        public FakeSectionNeidGtnh[] getBlockStorageArray() {
+            return new FakeSectionNeidGtnh[16];
+        }
+
+        public void generateSkylightMap() {
+        }
+
+        public void setChunkModified() {
+        }
+    }
+
+    public static class FakeWorldNeidGtnh {
+
+        public FakeProvider provider = new FakeProvider();
+
+        public FakeChunkNeidGtnh getChunkFromChunkCoords(int x, int z) {
+            return null;
+        }
+    }
+
+    public static class FakeCraftWorldNeidGtnh {
+
+        public FakeWorldNeidGtnh getHandle() {
+            return null;
+        }
+    }
+
+    //---------------------------------------------------------------------
     //Vanilla layout with an EXTRA unrelated short[] added by a coremod.
     //A structure-first probe would pick the short[] as the id array and
     //silently corrupt the world; the name match must pick the byte[]
@@ -447,6 +502,35 @@ public class NmsProbeTest {
         assertNull(handles.setChunkModified);
         assertNotNull(handles.isModifiedField);
         assertEquals("isModified", handles.isModifiedField.getName());
+
+        //Original (fewizz) NEID keeps the metadata in the NibbleArray
+        assertNull(handles.meta16Field);
+        assertNotNull(handles.nibbleCtor);
+        assertNotNull(handles.nibbleDataField);
+    }
+
+    @Test
+    public void probeDetectsGtnhNeidWideMetadata() throws ProbeException {
+        NmsHandles handles = NmsProbe.probe(FakeCraftWorldNeidGtnh.class);
+
+        assertEquals(NmsHandles.Layout.ID16, handles.layout);
+        assertNotNull(handles.ids16Field);
+        assertEquals("block16BArray", handles.ids16Field.getName());
+
+        //The 16 bit metadata array MUST be detected: the vanilla
+        //NibbleArray is dead on GTNH NEID servers, writing it would
+        //silently strip the metadata off every batched block (wool
+        //color, log orientation, stair facing...)
+        assertNotNull(handles.meta16Field);
+        assertEquals("block16BMetaArray", handles.meta16Field.getName());
+
+        //Two short[] fields exist - the name match must not report the
+        //layout as ambiguous, and the id array must not be confused with
+        //the metadata array
+        assertNull("MSB array must not be used in the 16 bit layout", handles.msbField);
+        //No nibble machinery is needed in this layout
+        assertNull(handles.nibbleCtor);
+        assertNull(handles.nibbleDataField);
     }
 
     @Test

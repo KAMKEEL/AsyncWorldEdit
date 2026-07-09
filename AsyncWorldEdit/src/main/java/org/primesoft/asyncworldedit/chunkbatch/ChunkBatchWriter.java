@@ -318,11 +318,17 @@ public class ChunkBatchWriter {
             }
 
             m_nmsWriter = new NmsChunkWriter(handles);
+            final String layoutName;
+            if (handles.layout == NmsHandles.Layout.ID16) {
+                layoutName = handles.meta16Field != null
+                        ? "NotEnoughIDs 16 bit id + 16 bit meta"
+                        : "NotEnoughIDs 16 bit id + nibble meta";
+            } else {
+                layoutName = "vanilla 12 bit";
+            }
             log(String.format(
                     "Direct chunk placement active (%s section layout, min %d blocks per chunk).",
-                    handles.layout == NmsHandles.Layout.ID16
-                            ? "NotEnoughIDs 16 bit" : "vanilla 12 bit",
-                    m_minBlocksPerChunk));
+                    layoutName, m_minBlocksPerChunk));
         } catch (ProbeException ex) {
             log("Direct chunk placement not available: " + ex.getMessage()
                     + " - falling back to classic block placement.");

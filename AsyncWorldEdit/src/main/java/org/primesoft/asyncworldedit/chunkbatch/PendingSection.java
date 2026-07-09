@@ -287,6 +287,57 @@ public final class PendingSection {
     }
 
     /**
+     * Apply the pending blocks to a GTNH NotEnoughIds section where BOTH
+     * ids and metadata are 16 bit short arrays (block16BArray /
+     * block16BMetaArray). The vanilla metadata NibbleArray is DEAD on
+     * those servers - writing it silently drops every block's metadata.
+     *
+     * @param ids16 the 16 bit block id array (4096 entries), modified in
+     * place
+     * @param meta16 the 16 bit metadata array (4096 entries), modified in
+     * place
+     * @param changedVisitor optional, called for every block whose stored
+     * id or metadata changed
+     * @param overflowVisitor called for pending blocks with ids over 16
+     * bits; those are not written
+     * @return number of blocks written into the arrays
+     */
+    public int applyId16(short[] ids16, short[] meta16,
+            IChangedBlockVisitor changedVisitor, IOverflowVisitor overflowVisitor) {
+        int written = 0;
+
+        for (int index = 0; index < m_slots.length; index++) {
+            int slot = m_slots[index];
+            if (slot == SectionMath.EMPTY_SLOT) {
+                continue;
+            }
+
+            int id = SectionMath.slotId(slot);
+            int data = SectionMath.slotData(slot);
+
+            if (id > SectionMath.ID16_MAX_ID) {
+                if (overflowVisitor != null) {
+                    overflowVisitor.overflow(index, id, data, SectionMath.slotNotify(slot));
+                }
+                continue;
+            }
+
+            int oldId = ids16[index] & 0xFFFF;
+            int oldData = meta16[index] & 0xFFFF;
+
+            ids16[index] = (short) id;
+            meta16[index] = (short) data;
+            written++;
+
+            if (changedVisitor != null && (oldId != id || oldData != data)) {
+                changedVisitor.changed(index, oldId, id);
+            }
+        }
+
+        return written;
+    }
+
+    /**
      * Apply the pending blocks to a NotEnoughIDs 16 bit layout section.
      *
      * @param ids16 the 16 bit block id array (4096 entries), modified in
