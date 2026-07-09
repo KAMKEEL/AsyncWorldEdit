@@ -162,14 +162,6 @@ awe:
     keepUndoFileFor: 0
     #The number of minutes between undo files cleanup
     undoFileCleanupInterval: 30
-  #The direct chunk options
-  directChunk:
-    #Do auto relight after each edit    
-    autoRelight: true
-    #New chunk light level (0-15)
-    newSectionLightLevel: 0
-    #Placed block light level (0-15), -1 for auto
-    blockLightLevel: -1
   #Permissions options
   permissions:
     #If you are OP you will have all AWE permissions
