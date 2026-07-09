@@ -295,8 +295,40 @@ public class AsyncWorld extends AbstractWorldWrapper {
         final BaseBlock newBlock = paramBlock.getData();
         final Vector v = paramVector.getData();
         final IPlayerEntry player = getPlayer(paramBlock, paramVector);
-        
-        IFuncEx<Boolean, WorldEditException> func = new IFuncEx<Boolean, WorldEditException>() {
+
+        if (paramBlock.isAsync() || paramVector.isAsync() || !m_dispatcher.isMainTask()) {
+            //Buffered engine: the old-block argument of the pre-check only
+            //feeds BlocksHub access checking, which is off by definition in
+            //buffered mode (the disallowed-blocks blacklist only looks at
+            //the new block) - skip the per block world read + BaseBlock
+            //allocation on the hot path
+            final BaseBlock oldForCheck
+                    = ConfigProvider.isBufferedEngine() ? null : getBlock(v);
+            if (!canPlace(player, m_bukkitWorld, vector, oldForCheck, newBlock)) {
+                return false;
+            }
+
+            if (bufferBlock(player, paramBlock.getJobId(), v, newBlock, bln)) {
+                return true;
+            }
+
+            return m_blockPlacer.addTasks(player,
+                    new WorldFuncEntryEx(this.getName(), paramBlock.getJobId(), v,
+                            setBlockFunc(v, newBlock, bln, player)));
+        }
+
+        return setBlockFunc(v, newBlock, bln, player).execute();
+    }
+
+    /**
+     * The classic path world write of setBlock (queued entry body / main
+     * thread inline write). Built only when the classic path is actually
+     * taken - a block accepted by the buffer-first engine never allocates
+     * this closure.
+     */
+    private IFuncEx<Boolean, WorldEditException> setBlockFunc(final Vector v,
+            final BaseBlock newBlock, final boolean bln, final IPlayerEntry player) {
+        return new IFuncEx<Boolean, WorldEditException>() {
             @Override
             public Boolean execute() throws WorldEditException {
                 final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
@@ -320,21 +352,6 @@ public class AsyncWorld extends AbstractWorldWrapper {
                 return result;
             }
         };
-        
-        if (paramBlock.isAsync() || paramVector.isAsync() || !m_dispatcher.isMainTask()) {
-            if (!canPlace(player, m_bukkitWorld, vector, getBlock(v), newBlock)) {
-                return false;
-            }
-
-            if (bufferBlock(player, paramBlock.getJobId(), v, newBlock, bln)) {
-                return true;
-            }
-
-            return m_blockPlacer.addTasks(player,
-                    new WorldFuncEntryEx(this.getName(), paramBlock.getJobId(), v, func));
-        }
-
-        return func.execute();
     }
 
     /**
@@ -451,8 +468,36 @@ public class AsyncWorld extends AbstractWorldWrapper {
         final Vector v = param.getData();
         final IPlayerEntry player = getPlayer(param);
         final BaseBlock newBlock = new BaseBlock(i, i1);
-        
-        IFunc<Boolean> func = new IFunc<Boolean>() {
+
+        if (param.isAsync() || !m_dispatcher.isMainTask()) {
+            //Same hot path slim as setBlock: no old-block read and no
+            //closure allocation when the buffer-first engine takes the
+            //block (see setBlockFunc)
+            final BaseBlock oldForCheck
+                    = ConfigProvider.isBufferedEngine() ? null : getBlock(v);
+            if (!canPlace(player, m_bukkitWorld, vector, oldForCheck, newBlock)) {
+                return false;
+            }
+
+            if (bufferBlock(player, param.getJobId(), v, newBlock, true)) {
+                return true;
+            }
+
+            return m_blockPlacer.addTasks(player,
+                    new WorldFuncEntry(this.getName(), param.getJobId(), v,
+                            setTypeIdAndDataFunc(v, i, i1, newBlock, player)));
+        }
+
+        return setTypeIdAndDataFunc(v, i, i1, newBlock, player).execute();
+    }
+
+    /**
+     * The classic path world write of setTypeIdAndData, built only when
+     * the classic path is actually taken
+     */
+    private IFunc<Boolean> setTypeIdAndDataFunc(final Vector v, final int i,
+            final int i1, final BaseBlock newBlock, final IPlayerEntry player) {
+        return new IFunc<Boolean>() {
             @Override
             public Boolean execute() {
                 final ChunkBatchWriter batcher = ChunkBatchWriter.getInstance();
@@ -474,21 +519,6 @@ public class AsyncWorld extends AbstractWorldWrapper {
                 return result;
             }
         };
-        
-        if (param.isAsync() || !m_dispatcher.isMainTask()) {
-            if (!canPlace(player, m_bukkitWorld, vector, getBlock(v), newBlock)) {
-                return false;
-            }
-
-            if (bufferBlock(player, param.getJobId(), v, newBlock, true)) {
-                return true;
-            }
-
-            return m_blockPlacer.addTasks(player,
-                    new WorldFuncEntry(this.getName(), param.getJobId(), v, func));
-        }
-
-        return func.execute();
     }
 
     @Override
