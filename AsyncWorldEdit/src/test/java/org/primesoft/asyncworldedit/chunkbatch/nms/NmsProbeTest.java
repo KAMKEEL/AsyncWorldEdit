@@ -177,6 +177,164 @@ public class NmsProbeTest {
     }
 
     //---------------------------------------------------------------------
+    //Vanilla layout with an EXTRA unrelated short[] added by a coremod.
+    //A structure-first probe would pick the short[] as the id array and
+    //silently corrupt the world; the name match must pick the byte[]
+    //LSB array and detect the vanilla layout.
+    //---------------------------------------------------------------------
+    public static class FakeSectionCoremodShort {
+
+        public short[] coremodScratchData = new short[16];
+        public byte[] blockLSBArray = new byte[4096];
+        public FakeNibble blockMetadataArray = new FakeNibble(4096, 4);
+        public FakeNibble blockMSBArray;
+
+        public FakeSectionCoremodShort(int yBase, boolean hasSky) {
+        }
+
+        public void removeInvalidBlocks() {
+        }
+    }
+
+    public static class FakeChunkCoremodShort {
+
+        public Map<Object, Object> chunkTileEntityMap = new HashMap<Object, Object>();
+
+        public FakeSectionCoremodShort[] getBlockStorageArray() {
+            return new FakeSectionCoremodShort[16];
+        }
+
+        public void generateSkylightMap() {
+        }
+
+        public void setChunkModified() {
+        }
+    }
+
+    public static class FakeWorldCoremodShort {
+
+        public FakeProvider provider = new FakeProvider();
+
+        public FakeChunkCoremodShort getChunkFromChunkCoords(int x, int z) {
+            return null;
+        }
+    }
+
+    public static class FakeCraftWorldCoremodShort {
+
+        public FakeWorldCoremodShort getHandle() {
+            return null;
+        }
+    }
+
+    //---------------------------------------------------------------------
+    //A NEID-like patch that RENAMED the 16 bit id array and left the old
+    //byte[] array behind, both with unknown names. The probe can not tell
+    //which array is the live id storage - it must refuse instead of
+    //guessing (a wrong guess corrupts the world).
+    //---------------------------------------------------------------------
+    public static class FakeSectionRenamedNeid {
+
+        public short[] patchedIdArray = new short[4096];
+        public byte[] leftoverIdArray = new byte[4096];
+        public FakeNibble blockMetadataArray = new FakeNibble(4096, 4);
+
+        public FakeSectionRenamedNeid(int yBase, boolean hasSky) {
+        }
+
+        public void removeInvalidBlocks() {
+        }
+    }
+
+    public static class FakeChunkRenamedNeid {
+
+        public Map<Object, Object> chunkTileEntityMap = new HashMap<Object, Object>();
+
+        public FakeSectionRenamedNeid[] getBlockStorageArray() {
+            return new FakeSectionRenamedNeid[16];
+        }
+
+        public void generateSkylightMap() {
+        }
+
+        public void setChunkModified() {
+        }
+    }
+
+    public static class FakeWorldRenamedNeid {
+
+        public FakeProvider provider = new FakeProvider();
+
+        public FakeChunkRenamedNeid getChunkFromChunkCoords(int x, int z) {
+            return null;
+        }
+    }
+
+    public static class FakeCraftWorldRenamedNeid {
+
+        public FakeWorldRenamedNeid getHandle() {
+            return null;
+        }
+    }
+
+    //---------------------------------------------------------------------
+    //Plain CraftBukkit/Spigot v1_7_R4 style hierarchy (no SRG/MCP names):
+    //getChunkAt, Chunk.i()/e()/initLighting, tileEntities map,
+    //worldProvider.g, ChunkSection.blockIds/blockData/recalcBlockCounts
+    //---------------------------------------------------------------------
+    public static class FakeSectionCb {
+
+        public byte[] blockIds = new byte[4096];
+        public FakeNibble extBlockIds;
+        public FakeNibble blockData = new FakeNibble(4096, 4);
+        public FakeNibble emittedLight = new FakeNibble(4096, 4);
+        public FakeNibble skyLight = new FakeNibble(4096, 4);
+
+        public FakeSectionCb(int yBase, boolean hasSky) {
+        }
+
+        public void recalcBlockCounts() {
+        }
+    }
+
+    public static class FakeProviderCb {
+
+        public boolean g;
+    }
+
+    public static class FakeChunkCb {
+
+        public Map<Object, Object> tileEntities = new HashMap<Object, Object>();
+        public boolean n;
+
+        public FakeSectionCb[] i() {
+            return new FakeSectionCb[16];
+        }
+
+        public void initLighting() {
+        }
+
+        public void e() {
+        }
+    }
+
+    public static class FakeWorldCb {
+
+        public FakeProviderCb worldProvider = new FakeProviderCb();
+
+        public FakeChunkCb getChunkAt(int x, int z) {
+            return null;
+        }
+    }
+
+    public static class FakeCraftWorldCb {
+
+        public FakeWorldCb getHandle() {
+            return null;
+        }
+    }
+
+    //---------------------------------------------------------------------
     //Broken hierarchies for the clean fallback tests
     //---------------------------------------------------------------------
     public static class FakeSectionNoMeta {
@@ -289,6 +447,49 @@ public class NmsProbeTest {
         assertNull(handles.setChunkModified);
         assertNotNull(handles.isModifiedField);
         assertEquals("isModified", handles.isModifiedField.getName());
+    }
+
+    @Test
+    public void probeIgnoresUnrelatedCoremodShortArray() throws ProbeException {
+        NmsHandles handles = NmsProbe.probe(FakeCraftWorldCoremodShort.class);
+
+        //The unrelated short[] must NOT be mistaken for a NotEnoughIDs id
+        //array - the name matched byte[] LSB array wins
+        assertEquals(NmsHandles.Layout.VANILLA, handles.layout);
+        assertNull(handles.ids16Field);
+        assertNotNull(handles.lsbField);
+        assertEquals("blockLSBArray", handles.lsbField.getName());
+    }
+
+    @Test
+    public void probeRefusesAmbiguousRenamedIdArrays() {
+        try {
+            NmsProbe.probe(FakeCraftWorldRenamedNeid.class);
+            fail("expected ProbeException");
+        } catch (ProbeException ex) {
+            //Neither array name is known and both types are present:
+            //guessing either way risks world corruption, so the probe
+            //must refuse and fall back to classic placement
+            assertTrue(ex.getMessage().contains("ambiguous"));
+        }
+    }
+
+    @Test
+    public void probeDetectsPlainCraftBukkitNames() throws ProbeException {
+        NmsHandles handles = NmsProbe.probe(FakeCraftWorldCb.class);
+
+        assertEquals(NmsHandles.Layout.VANILLA, handles.layout);
+        assertEquals("getChunkAt", handles.getChunk.getName());
+        assertEquals("i", handles.getSections.getName());
+        assertEquals("initLighting", handles.generateSkylightMap.getName());
+        assertEquals("e", handles.setChunkModified.getName());
+        assertEquals("tileEntities", handles.tileEntityMapField.getName());
+        assertEquals("worldProvider", handles.providerField.getName());
+        assertEquals("g", handles.hasNoSkyField.getName());
+        assertEquals("blockIds", handles.lsbField.getName());
+        assertEquals("extBlockIds", handles.msbField.getName());
+        assertEquals("blockData", handles.metaField.getName());
+        assertEquals("recalcBlockCounts", handles.removeInvalidBlocks.getName());
     }
 
     @Test

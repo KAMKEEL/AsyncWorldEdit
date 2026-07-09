@@ -50,7 +50,6 @@ package org.primesoft.asyncworldedit.chunkbatch.nms;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import org.bukkit.World;
@@ -134,8 +133,58 @@ public class NmsChunkWriter {
      */
     private int[] m_lightValues;
 
+    /**
+     * The section array layout was verified against a live section
+     */
+    private boolean m_layoutVerified;
+
     public NmsChunkWriter(NmsHandles handles) {
         m_handles = handles;
+    }
+
+    /**
+     * Verify that the section arrays behind the detected layout have the
+     * expected dimensions. A structural probe can be fooled by coremod
+     * patched classes; a wrong pick must be refused before anything is
+     * written, otherwise the world silently corrupts.
+     *
+     * @param section a live (non null) chunk section
+     * @param handles the resolved handles
+     * @return an error description, or null when the layout checks out
+     * @throws Exception when the reflective access itself fails
+     */
+    public static String checkSectionArrays(Object section, NmsHandles handles)
+            throws Exception {
+        if (handles.layout == NmsHandles.Layout.ID16) {
+            short[] ids16 = (short[]) handles.ids16Field.get(section);
+            if (ids16 != null && ids16.length != SectionMath.SECTION_SIZE) {
+                return String.format(
+                        "section id array %s has %d entries, expected %d",
+                        handles.ids16Field.getName(), ids16.length,
+                        SectionMath.SECTION_SIZE);
+            }
+        } else {
+            byte[] lsb = (byte[]) handles.lsbField.get(section);
+            if (lsb == null || lsb.length != SectionMath.SECTION_SIZE) {
+                return String.format(
+                        "section id array %s has %d entries, expected %d",
+                        handles.lsbField.getName(),
+                        lsb == null ? 0 : lsb.length,
+                        SectionMath.SECTION_SIZE);
+            }
+        }
+
+        Object metaNibble = handles.metaField.get(section);
+        if (metaNibble != null) {
+            byte[] meta = (byte[]) handles.nibbleDataField.get(metaNibble);
+            if (meta == null || meta.length != SectionMath.NIBBLE_SIZE) {
+                return String.format(
+                        "section metadata array has %d bytes, expected %d",
+                        meta == null ? 0 : meta.length, SectionMath.NIBBLE_SIZE);
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -191,6 +240,16 @@ public class NmsChunkWriter {
                 }
                 section = m_handles.sectionCtor.newInstance(s << 4, hasSky);
                 sections[s] = section;
+            } else if (!m_layoutVerified) {
+                //Verify the detected layout against the first live section
+                //before anything is written - a wrong structural pick must
+                //disable the feature, not corrupt the world
+                String error = checkSectionArrays(section, m_handles);
+                if (error != null) {
+                    throw new IllegalStateException(
+                            "section layout mismatch: " + error);
+                }
+                m_layoutVerified = true;
             }
 
             final int sectionY = s << 4;
@@ -252,6 +311,12 @@ public class NmsChunkWriter {
             m_handles.removeInvalidBlocks.invoke(section);
         }
 
+        //Sections the chunk cannot hold (shorter section array than the
+        //vanilla 16) must not be dropped - route them to the classic path
+        for (int s = sections.length; s < SectionMath.SECTIONS_PER_CHUNK; s++) {
+            collectSectionOverflow(pending, s, overflow);
+        }
+
         removeStaleTileEntities(chunk, pending);
 
         m_handles.generateSkylightMap.invoke(chunk);
@@ -290,19 +355,60 @@ public class NmsChunkWriter {
     }
 
     /**
+     * Collect all pending blocks of one section as overflow blocks for
+     * the classic per block path
+     *
+     * @param pending the pending chunk
+     * @param sectionIdx the section (0..15)
+     * @param out the overflow list to append to
+     */
+    static void collectSectionOverflow(PendingChunk pending, int sectionIdx,
+            List<OverflowBlock> out) {
+        PendingSection ps = pending.getSection(sectionIdx);
+        if (ps == null || ps.getCount() == 0) {
+            return;
+        }
+
+        final int bx = pending.getX() << 4;
+        final int bz = pending.getZ() << 4;
+        final int sy = sectionIdx << 4;
+
+        for (int index = 0; index < SectionMath.SECTION_SIZE; index++) {
+            int slot = ps.getSlot(index);
+            if (slot == SectionMath.EMPTY_SLOT) {
+                continue;
+            }
+
+            out.add(new OverflowBlock(
+                    bx + SectionMath.indexToX(index),
+                    sy + SectionMath.indexToY(index),
+                    bz + SectionMath.indexToZ(index),
+                    SectionMath.slotId(slot), SectionMath.slotData(slot),
+                    SectionMath.slotNotify(slot)));
+        }
+    }
+
+    /**
      * Invalidate and remove tile entities located at overwritten positions.
      * A stale tile entity under a directly written block is exactly the
      * kind of ghost data this must prevent.
+     *
+     * The matching entries are snapshotted first, then removed from the
+     * map, and invalidate() runs last and outside any iteration: a modded
+     * invalidate() may mutate the chunk tile entity map, which would throw
+     * a ConcurrentModificationException mid iteration (and permanently
+     * disable the feature).
      */
-    private void removeStaleTileEntities(Object chunk, PendingChunk pending) throws Exception {
+    void removeStaleTileEntities(Object chunk, PendingChunk pending) throws Exception {
         Map<?, ?> tiles = (Map<?, ?>) m_handles.tileEntityMapField.get(chunk);
         if (tiles == null || tiles.isEmpty()) {
             return;
         }
 
-        Iterator<? extends Map.Entry<?, ?>> iterator = tiles.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<?, ?> entry = iterator.next();
+        List<Object> staleKeys = null;
+        List<Object> staleTiles = null;
+
+        for (Map.Entry<?, ?> entry : tiles.entrySet()) {
             Object pos = entry.getKey();
 
             resolvePosFields(pos.getClass());
@@ -319,9 +425,25 @@ public class NmsChunkWriter {
                 continue;
             }
 
-            Object tile = entry.getValue();
+            if (staleKeys == null) {
+                staleKeys = new ArrayList<Object>();
+                staleTiles = new ArrayList<Object>();
+            }
+            staleKeys.add(pos);
+            staleTiles.add(entry.getValue());
+        }
+
+        if (staleKeys == null) {
+            return;
+        }
+
+        for (Object key : staleKeys) {
+            tiles.remove(key);
+        }
+
+        //Invalidate outside the map iteration - it may mutate the map
+        for (Object tile : staleTiles) {
             invalidateTile(tile);
-            iterator.remove();
         }
     }
 

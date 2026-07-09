@@ -77,16 +77,16 @@ public final class NmsProbe {
         "func_72964_e", "getChunkFromChunkCoords", "getChunkAt"};
 
     private static final String[] GET_SECTIONS = {
-        "func_76587_i", "getBlockStorageArray", "getSections"};
+        "func_76587_i", "getBlockStorageArray", "getSections", "i"};
 
     private static final String[] GENERATE_SKYLIGHT_MAP = {
         "func_76603_b", "generateSkylightMap", "initLighting"};
 
     private static final String[] SET_CHUNK_MODIFIED = {
-        "func_76630_e", "setChunkModified"};
+        "func_76630_e", "setChunkModified", "e"};
 
     private static final String[] IS_MODIFIED = {
-        "field_76643_l", "isModified"};
+        "field_76643_l", "isModified", "n"};
 
     private static final String[] TILE_ENTITY_MAP = {
         "field_150816_i", "chunkTileEntityMap", "tileEntities"};
@@ -95,7 +95,7 @@ public final class NmsProbe {
         "field_73011_w", "provider", "worldProvider"};
 
     private static final String[] HAS_NO_SKY = {
-        "field_76576_e", "hasNoSky"};
+        "field_76576_e", "hasNoSky", "g"};
 
     private static final String[] RELIGHT = {
         "func_147451_t", "updateAllLightTypes"};
@@ -108,6 +108,19 @@ public final class NmsProbe {
 
     private static final String[] MSB_ARRAY = {
         "field_76681_e", "blockMSBArray", "extBlockIds"};
+
+    /**
+     * The NotEnoughIDs 16 bit id array. The field is injected by the NEID
+     * patch and keeps its name in SRG and MCP environments.
+     */
+    private static final String[] ID16_ARRAY = {
+        "block16BArray"};
+
+    /**
+     * The vanilla LSB id array: SRG, MCP and CraftBukkit names
+     */
+    private static final String[] LSB_ARRAY = {
+        "field_76679_d", "blockLSBArray", "blockIds"};
 
     private static final String[] BLOCK_CLASS = {
         "net.minecraft.block.Block", "net.minecraft.server.v1_7_R4.Block"};
@@ -212,14 +225,38 @@ public final class NmsProbe {
             }
         }
 
-        //Section layout detection
-        Field ids16Field = null;
-        Field lsbField = null;
-        for (Field field : sectionClass.getDeclaredFields()) {
-            if (field.getType() == short[].class && ids16Field == null) {
-                ids16Field = field;
-            } else if (field.getType() == byte[].class && lsbField == null) {
-                lsbField = field;
+        //Section layout detection: match the id array by NAME first. A
+        //structure-only pick (first short[]/byte[] found) can be fooled by
+        //a coremod adding an unrelated array field and would then silently
+        //corrupt the world. Structure is only used as a fallback when no
+        //name matches AND exactly one candidate of one type exists.
+        Field ids16Field = findFieldOrNull(sectionClass, ID16_ARRAY, short[].class);
+        Field lsbField = findFieldOrNull(sectionClass, LSB_ARRAY, byte[].class);
+
+        if (ids16Field == null && lsbField == null) {
+            int shortArrays = 0;
+            int byteArrays = 0;
+            Field shortCandidate = null;
+            Field byteCandidate = null;
+            for (Field field : sectionClass.getDeclaredFields()) {
+                if (field.getType() == short[].class) {
+                    shortArrays++;
+                    shortCandidate = field;
+                } else if (field.getType() == byte[].class) {
+                    byteArrays++;
+                    byteCandidate = field;
+                }
+            }
+
+            if (shortArrays == 1 && byteArrays == 0) {
+                ids16Field = shortCandidate;
+            } else if (byteArrays == 1 && shortArrays == 0) {
+                lsbField = byteCandidate;
+            } else if (shortArrays != 0 || byteArrays != 0) {
+                throw new ProbeException(
+                        "ambiguous section id storage in " + sectionClass.getName()
+                        + " (" + shortArrays + " short[] and " + byteArrays
+                        + " byte[] fields, none with a known name)");
             }
         }
 
@@ -302,6 +339,19 @@ public final class NmsProbe {
             }
         }
         throw new ProbeException(what + " not found on " + cls.getName());
+    }
+
+    /**
+     * Find a field by candidate names, walking the class hierarchy;
+     * null when no candidate matches
+     */
+    private static Field findFieldOrNull(Class<?> cls, String[] names,
+            Class<?> expectedType) {
+        try {
+            return findField(cls, names, expectedType, "");
+        } catch (ProbeException ex) {
+            return null;
+        }
     }
 
     /**
