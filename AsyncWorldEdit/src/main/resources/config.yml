@@ -23,6 +23,20 @@ awe:
     #direct chunk block placement: queued plain blocks (no NBT) are grouped per chunk
     #and written straight into the chunk sections, followed by one chunk refresh packet,
     #instead of being placed one by one through the Bukkit API
+    #
+    #Behaviour differences vs classic placement (know these before enabling):
+    # * batched blocks do NOT fire physics or neighbor notifications (fastmode-like);
+    #   mod machines that rely on onBlockAdded/neighbor updates may need classic mode
+    #   (enabled: false)
+    # * the precipitation heightmap is not rebuilt (rain/snow may render at the old
+    #   surface height until the chunk reloads)
+    # * relighting is capped per chunk - after giant pastes run //fixlighting on the
+    #   area if you see dark spots
+    #
+    #This feature self-activates on upgrade (enabled: true is the default); AWE logs
+    #one line at startup stating whether direct chunk placement is active. When the
+    #server chunk layout is not recognized (or fails the sanity checks) AWE
+    #automatically falls back to the classic per block placement.
     direct-chunk:
       #enable the direct chunk placement; when the server chunk layout is not
       #recognized AWE automatically falls back to the classic per block placement
