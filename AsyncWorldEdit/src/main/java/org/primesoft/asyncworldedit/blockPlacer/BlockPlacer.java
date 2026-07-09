@@ -226,6 +226,37 @@ public class BlockPlacer implements IBlockPlacer {
     }
 
     /**
+     * Total number of queued classic block placer entries across all players
+     * (the live classic queue footprint, read on demand for the engine status
+     * command).
+     *
+     * @return the summed per player queue sizes
+     */
+    @Override
+    public int getGlobalQueueSize() {
+        int total = 0;
+        synchronized (m_mutex) {
+            for (BlockPlacerPlayer entry : m_blocks.values()) {
+                total += entry.getQueue().size();
+            }
+        }
+        return total;
+    }
+
+    /**
+     * The current rolling server TPS estimate from the adaptive tick budget
+     * (the smoothness signal), or {@link AdaptiveTickBudget#MAX_TPS} before the
+     * budget is initialized.
+     *
+     * @return the estimated ticks per second
+     */
+    @Override
+    public double getTpsEstimate() {
+        final AdaptiveTickBudget budget = m_tickBudget;
+        return budget == null ? AdaptiveTickBudget.MAX_TPS : budget.getTpsEstimate();
+    }
+
+    /**
      * Get the physics watcher
      *
      * @return
@@ -546,6 +577,14 @@ public class BlockPlacer implements IBlockPlacer {
             JobBufferRegistry.getInstance().drainRoundRobin(flushLimit);
         }
 
+        //Buffer-first memory + smoothness telemetry: one server-global sample
+        //per run, folded into every active job so the buffered vs classic A/B
+        //completion lines compare heap and TPS as well as throughput. ZERO
+        //cost when engine debug is off (mirrors the classic block counter).
+        if (EngineDebug.isEnabled()) {
+            sampleJobTelemetry(budgetExceeded);
+        }
+
         final JobBufferRegistry registry = JobBufferRegistry.getInstance();
         if (ConfigProvider.messages().isDebugOn()) {
             log(String.format("[BP RUN] Blocks: %d\tTime: %d\tDemanding: %s\tTPS: %.1f\tBudget: %dms%s",
@@ -562,6 +601,40 @@ public class BlockPlacer implements IBlockPlacer {
                     org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getMaxSections()));
         }
         return blocks > 0 || registry.getLastFlushedBlocks() > 0;
+    }
+
+    /**
+     * Take one server-global memory + smoothness sample for this placer run
+     * and fold it into every currently active job (buffered buffers or classic
+     * queue jobs). Only called while engine debug is on.
+     *
+     * NOTE: the used heap and TPS are SERVER-GLOBAL for the whole run, not
+     * isolated to any single job; attributing them to each active job is exact
+     * for the single-active-job A/B (one builder pasting) and overlaps when
+     * several jobs run at once.
+     *
+     * @param budgetExceeded whether this run exhausted the adaptive tick budget
+     */
+    private void sampleJobTelemetry(boolean budgetExceeded) {
+        final Runtime rt = Runtime.getRuntime();
+        final long usedHeap = rt.totalMemory() - rt.freeMemory();
+        final long tpsMilli = EngineStats.tpsToMilli(m_tickBudget.getTpsEstimate());
+
+        if (ConfigProvider.isBufferedEngine()) {
+            //Buffered jobs live in the registry; attribute to their IJobEntry
+            JobBufferRegistry.getInstance().recordTelemetry(usedHeap, tpsMilli, budgetExceeded);
+        } else {
+            //Classic jobs live in the per player queues
+            synchronized (m_mutex) {
+                for (BlockPlacerPlayer entry : m_blocks.values()) {
+                    for (IJobEntry job : entry.getJobs()) {
+                        if (job instanceof JobEntry) {
+                            ((JobEntry) job).recordTelemetry(usedHeap, tpsMilli, budgetExceeded);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -1270,8 +1343,15 @@ public class BlockPlacer implements IBlockPlacer {
             return;
         }
         final long wallMs = System.currentTimeMillis() - jobEntry.getStartMillis();
-        log(EngineStats.classicJobLine(jobEntry.getJobId(),
-                jobEntry.getBlocksPlaced(), wallMs));
+        if (jobEntry.hasTelemetry()) {
+            log(EngineStats.classicJobLine(jobEntry.getJobId(),
+                    jobEntry.getBlocksPlaced(), wallMs, true,
+                    jobEntry.getPeakHeap(), jobEntry.getHeapDelta(),
+                    jobEntry.getMinTps(), jobEntry.getBudgetExceeded()));
+        } else {
+            log(EngineStats.classicJobLine(jobEntry.getJobId(),
+                    jobEntry.getBlocksPlaced(), wallMs));
+        }
     }
 
     /**

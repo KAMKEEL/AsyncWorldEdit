@@ -127,6 +127,21 @@ public interface IBlockPlacer {
     boolean isPaused();
 
     /**
+     * Total number of queued classic block placer entries across all players
+     * (the live classic queue footprint).
+     *
+     * @return the summed per player queue sizes
+     */
+    int getGlobalQueueSize();
+
+    /**
+     * The current rolling server TPS estimate from the adaptive tick budget.
+     *
+     * @return the estimated ticks per second
+     */
+    double getTpsEstimate();
+
+    /**
      * Wrap action into AsyncWorldEdit job and perform it asynchronously
      *
      * @param editSession

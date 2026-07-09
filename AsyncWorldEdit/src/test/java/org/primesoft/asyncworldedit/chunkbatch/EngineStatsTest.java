@@ -112,4 +112,80 @@ public class EngineStatsTest {
                 "[ENGINE] job 1 done: classic blocks=0 wall=1ms avg=0 blocks/sec",
                 EngineStats.classicJobLine(1, 0, 0));
     }
+
+    //One megabyte in bytes
+    private static final long MB = 1024L * 1024L;
+
+    @Test
+    public void formatMbRoundsToWholeMegabytes() {
+        assertEquals("0MB", EngineStats.formatMb(0));
+        assertEquals("1MB", EngineStats.formatMb(MB));
+        assertEquals("512MB", EngineStats.formatMb(512 * MB));
+        //1.4MB rounds down, 1.5MB rounds up (half up)
+        assertEquals("1MB", EngineStats.formatMb(MB + 419430)); //~1.4MB
+        assertEquals("2MB", EngineStats.formatMb(MB + MB / 2)); //1.5MB
+    }
+
+    @Test
+    public void formatMbDeltaIsAlwaysSigned() {
+        assertEquals("+38MB", EngineStats.formatMbDelta(38 * MB));
+        assertEquals("-5MB", EngineStats.formatMbDelta(-5 * MB));
+        //zero renders as a positive zero delta
+        assertEquals("+0MB", EngineStats.formatMbDelta(0));
+    }
+
+    @Test
+    public void tpsToMilliEncodesThousandths() {
+        assertEquals(19400L, EngineStats.tpsToMilli(19.4));
+        assertEquals(20000L, EngineStats.tpsToMilli(20.0));
+        assertEquals(0L, EngineStats.tpsToMilli(0.0));
+    }
+
+    @Test
+    public void minTpsMilliFoldsTheSmaller() {
+        //a lower reading lowers the running minimum
+        assertEquals(19400L, EngineStats.minTpsMilli(20000L, 19.4));
+        //a higher reading leaves the running minimum untouched
+        assertEquals(19400L, EngineStats.minTpsMilli(19400L, 20.0));
+        //seeded from MAX_VALUE the first reading always wins
+        assertEquals(18500L, EngineStats.minTpsMilli(Long.MAX_VALUE, 18.5));
+    }
+
+    @Test
+    public void enrichedClassicJobLineFormat() {
+        assertEquals(
+                "[ENGINE] job 5 done: classic blocks=329156 wall=2307ms avg=142677 blocks/sec"
+                + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3",
+                EngineStats.classicJobLine(5, 329156, 2307, true,
+                        512 * MB, 38 * MB, 19.4, 3));
+    }
+
+    @Test
+    public void enrichedBufferedJobLineFormat() {
+        assertEquals(
+                "[ENGINE] job 5 done: buffered blocks=329156 wall=2307ms avg=142677 blocks/sec"
+                + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3",
+                EngineStats.bufferedJobLine(5, 329156, 2307, true,
+                        512 * MB, 38 * MB, 19.4, 3));
+    }
+
+    @Test
+    public void enrichedJobLinesDifferOnlyByEngineLabel() {
+        String classic = EngineStats.classicJobLine(9, 128, 64, true,
+                64 * MB, -5 * MB, 18.2, 1);
+        String buffered = EngineStats.bufferedJobLine(9, 128, 64, true,
+                64 * MB, -5 * MB, 18.2, 1);
+        assertEquals(classic.replace("classic", "ENGINE_LABEL"),
+                buffered.replace("buffered", "ENGINE_LABEL"));
+    }
+
+    @Test
+    public void enrichedJobLineWithoutSamplesIsBaseLineOnly() {
+        //hasSamples==false must drop the telemetry fields entirely so the line
+        //never prints misleading zeros
+        String base = EngineStats.classicJobLine(7, 5000, 250);
+        assertEquals(base,
+                EngineStats.classicJobLine(7, 5000, 250, false,
+                        999 * MB, 999 * MB, 5.0, 9));
+    }
 }

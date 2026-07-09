@@ -52,6 +52,7 @@ import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.primesoft.asyncworldedit.api.MessageSystem;
 import org.primesoft.asyncworldedit.api.blockPlacer.IBlockPlacer;
@@ -125,6 +126,128 @@ public class JobEntry extends BlockPlacerEntry implements IJobEntry {
      * once regardless of how many times the job is removed.
      */
     private final AtomicBoolean m_completionLogged = new AtomicBoolean();
+
+    /**
+     * Buffer-first engine memory + smoothness telemetry, only sampled while
+     * engine debug is on (zero cost otherwise). Both engines fold the same
+     * per run server sample into these fields (classic samples its active
+     * JobEntry directly, buffered attributes the sample to the JobBuffer's
+     * IJobEntry) so both completion lines read the identical fields.
+     *
+     * IMPORTANT: heap and TPS are SERVER-GLOBAL samples taken during the job's
+     * lifetime, NOT isolated to this job. They are meaningful for the single
+     * active job A/B case (one builder pasting); with multiple concurrent jobs
+     * the numbers overlap - do not read them as per-job-exclusive.
+     */
+    private final AtomicLong m_peakHeap = new AtomicLong();
+
+    /**
+     * Used heap sampled at the job's first sampled run (heap-delta baseline)
+     */
+    private volatile long m_startHeap;
+
+    /**
+     * Guards the one-shot capture of {@link #m_startHeap}; also doubles as the
+     * "this job has at least one sample" flag.
+     */
+    private final AtomicBoolean m_startHeapSet = new AtomicBoolean();
+
+    /**
+     * Minimum TPS estimate seen during the job, encoded as tps*1000 so it can
+     * be folded lock free with an atomic min (seeded to MAX_VALUE = no sample)
+     */
+    private final AtomicLong m_minTpsMilli = new AtomicLong(Long.MAX_VALUE);
+
+    /**
+     * Number of sampled runs during the job that exceeded the tick budget
+     */
+    private final AtomicInteger m_budgetExceeded = new AtomicInteger();
+
+    /**
+     * Fold one per run server-global sample into this job's telemetry. Called
+     * once per placer run for every active job while engine debug is on.
+     *
+     * @param usedHeap used heap this run (bytes)
+     * @param tpsMilli TPS estimate this run, encoded as tps*1000
+     * @param budgetExceeded whether this run exhausted the tick budget
+     */
+    public void recordTelemetry(long usedHeap, long tpsMilli, boolean budgetExceeded) {
+        //First sample sets the heap-delta baseline
+        if (m_startHeapSet.compareAndSet(false, true)) {
+            m_startHeap = usedHeap;
+        }
+        //peak = max used heap (lock free)
+        for (;;) {
+            final long peak = m_peakHeap.get();
+            if (usedHeap <= peak) {
+                break;
+            }
+            if (m_peakHeap.compareAndSet(peak, usedHeap)) {
+                break;
+            }
+        }
+        //min tps (lock free)
+        for (;;) {
+            final long min = m_minTpsMilli.get();
+            if (tpsMilli >= min) {
+                break;
+            }
+            if (m_minTpsMilli.compareAndSet(min, tpsMilli)) {
+                break;
+            }
+        }
+        if (budgetExceeded) {
+            m_budgetExceeded.incrementAndGet();
+        }
+    }
+
+    /**
+     * Whether at least one per run sample was folded into this job (so the
+     * completion line knows whether the telemetry fields are meaningful).
+     *
+     * @return true once {@link #recordTelemetry} ran at least once
+     */
+    public boolean hasTelemetry() {
+        return m_startHeapSet.get();
+    }
+
+    /**
+     * Peak used heap seen during the job (bytes).
+     *
+     * @return the peak, 0 when never sampled
+     */
+    public long getPeakHeap() {
+        return m_peakHeap.get();
+    }
+
+    /**
+     * Peak used heap minus the used heap at the job's first sample (bytes),
+     * i.e. the heap growth attributable to the job's lifetime.
+     *
+     * @return the signed delta, 0 when never sampled
+     */
+    public long getHeapDelta() {
+        return m_peakHeap.get() - m_startHeap;
+    }
+
+    /**
+     * Minimum TPS estimate seen during the job.
+     *
+     * @return the minimum TPS, 0 when never sampled
+     */
+    public double getMinTps() {
+        final long min = m_minTpsMilli.get();
+        return min == Long.MAX_VALUE ? 0.0 : min / 1000.0;
+    }
+
+    /**
+     * Number of sampled runs that exceeded the tick budget during the job.
+     *
+     * @return the budget-exceeded count
+     */
+    public int getBudgetExceeded() {
+        return m_budgetExceeded.get();
+    }
 
     /**
      * Wall clock time (ms) when this job was created.

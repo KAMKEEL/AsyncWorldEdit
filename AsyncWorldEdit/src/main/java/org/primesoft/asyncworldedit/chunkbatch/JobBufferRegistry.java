@@ -59,6 +59,7 @@ import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.JobStatus;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
+import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
 
 /**
  * Central coordinator of the buffer-first block placement engine.
@@ -537,7 +538,30 @@ public final class JobBufferRegistry {
     }
 
     /**
+     * Fold a once-per-run server-global sample (used heap + TPS + budget
+     * exceeded) into every live job buffer's IJobEntry. Called by the block
+     * placer run loop while engine debug is on; buffers whose job is null
+     * (loose writes) or not a {@link JobEntry} are skipped. See {@link
+     * JobEntry#recordTelemetry} for the global-sample caveat.
+     *
+     * @param usedHeap used heap this run (bytes)
+     * @param tpsMilli TPS estimate this run, encoded as tps*1000
+     * @param budgetExceeded whether this run exhausted the tick budget
+     */
+    public void recordTelemetry(long usedHeap, long tpsMilli, boolean budgetExceeded) {
+        for (JobBuffer buf : m_buffers.values()) {
+            final IJobEntry job = buf.getJob();
+            if (job instanceof JobEntry) {
+                ((JobEntry) job).recordTelemetry(usedHeap, tpsMilli, budgetExceeded);
+            }
+        }
+    }
+
+    /**
      * Per job completion debug line (total blocks, wall ms, avg blocks/sec)
+     * enriched with the buffered job's memory + smoothness telemetry. When the
+     * buffer's IJobEntry is null (loose writes) or was never sampled, only the
+     * base line prints (blocks/wall/avg).
      */
     private static void logJobDone(JobBuffer buf) {
         if (!EngineDebug.isEnabled()) {
@@ -545,6 +569,16 @@ public final class JobBufferRegistry {
         }
         final long total = buf.getTotalFlushed();
         final long wallMs = System.currentTimeMillis() - buf.getStartMillis();
+        final IJobEntry job = buf.getJob();
+        if (job instanceof JobEntry) {
+            final JobEntry je = (JobEntry) job;
+            if (je.hasTelemetry()) {
+                log(EngineStats.bufferedJobLine(buf.getJobId(), total, wallMs, true,
+                        je.getPeakHeap(), je.getHeapDelta(), je.getMinTps(),
+                        je.getBudgetExceeded()));
+                return;
+            }
+        }
         log(EngineStats.bufferedJobLine(buf.getJobId(), total, wallMs));
     }
 

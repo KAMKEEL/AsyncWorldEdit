@@ -48,11 +48,13 @@
 package org.primesoft.asyncworldedit.commands;
 
 import org.primesoft.asyncworldedit.core.Help;
+import org.primesoft.asyncworldedit.api.blockPlacer.IBlockPlacer;
 import org.primesoft.asyncworldedit.api.inner.IAsyncWorldEditCore;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.api.taskdispatcher.ITaskDispatcher;
 import org.primesoft.asyncworldedit.api.utils.IAction;
 import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
+import org.primesoft.asyncworldedit.chunkbatch.EngineStats;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
 import org.primesoft.asyncworldedit.chunkbatch.SectionBudget;
 import org.primesoft.asyncworldedit.configuration.ConfigProvider;
@@ -92,7 +94,7 @@ public class EngineCommand {
         }
 
         if (args.length == 1) {
-            showStatus(player);
+            showStatus(sender, player);
             return;
         }
 
@@ -108,7 +110,7 @@ public class EngineCommand {
         }
     }
 
-    private static void showStatus(IPlayerEntry player) {
+    private static void showStatus(IAsyncWorldEditCore sender, IPlayerEntry player) {
         player.say(MessageType.CMD_ENGINE_STATUS.format(modeName(ConfigProvider.isBufferedEngine()),
                 EngineDebug.isEnabled()
                         ? MessageType.GLOBAL_ON.format()
@@ -121,6 +123,42 @@ public class EngineCommand {
         player.say(MessageType.CMD_ENGINE_STATUS_COUNTERS.format(
                 Integer.toString(JobBufferRegistry.getInstance().getBufferCount()),
                 Integer.toString(SectionBudget.getShared().getUsed())));
+
+        showMemorySnapshot(sender, player);
+    }
+
+    /**
+     * Live memory + smoothness snapshot for the engine status command. Safe to
+     * compute on demand (it is a manual status command, not a hot path): heap
+     * used/max, the buffered section footprint (each pending section buffer
+     * costs a fixed 32 KB), the classic queue footprint (~250 bytes per queued
+     * block entry) and the current server TPS estimate.
+     */
+    private static void showMemorySnapshot(IAsyncWorldEditCore sender, IPlayerEntry player) {
+        final Runtime rt = Runtime.getRuntime();
+        final long usedBytes = rt.totalMemory() - rt.freeMemory();
+        final long maxBytes = rt.maxMemory();
+        final long usedMb = Math.round(usedBytes / (1024.0 * 1024.0));
+        final long maxMb = Math.round(maxBytes / (1024.0 * 1024.0));
+        final int pct = maxBytes > 0 ? (int) Math.round(usedBytes * 100.0 / maxBytes) : 0;
+
+        final SectionBudget sb = SectionBudget.getShared();
+        final int sectionsUsed = sb.getUsed();
+        final int sectionsMax = sb.getMaxSections();
+        //Each pending section buffer costs a fixed 32 KB (see SectionBudget)
+        final String bufferedFootprint = EngineStats.formatMb(sectionsUsed * 32L * 1024L);
+
+        final IBlockPlacer bp = sender.getBlockPlacer();
+        final int classicQueue = bp.getGlobalQueueSize();
+        //Classic queue entries cost ~250 bytes each (per block queue object)
+        final String classicFootprint = EngineStats.formatMb(classicQueue * 250L);
+        final double tps = bp.getTpsEstimate();
+
+        player.say(String.format("[ENGINE] heap=%d/%dMB (%d%%) tps=%.1f",
+                usedMb, maxMb, pct, tps));
+        player.say(String.format(
+                "[ENGINE] buffered-sections=%d/%d (~%s) classic-queue=%d (~%s @250B)",
+                sectionsUsed, sectionsMax, bufferedFootprint, classicQueue, classicFootprint));
     }
 
     private static void switchToBuffered(IPlayerEntry player) {

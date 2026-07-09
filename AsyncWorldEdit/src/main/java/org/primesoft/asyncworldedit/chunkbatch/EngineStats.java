@@ -77,6 +77,60 @@ public final class EngineStats {
     }
 
     /**
+     * Bytes rounded to whole megabytes with a trailing unit, e.g. {@code
+     * 512MB}. 1 MB == 1024*1024 bytes.
+     *
+     * @param bytes a byte count
+     * @return the rounded "NNMB" string
+     */
+    public static String formatMb(long bytes) {
+        return mb(bytes) + "MB";
+    }
+
+    /**
+     * Bytes rounded to whole megabytes, always signed, e.g. {@code +38MB} or
+     * {@code -5MB} (zero is rendered {@code +0MB}). Used for the heap delta of
+     * a job (peak used heap minus the used heap at job start).
+     *
+     * @param bytes a signed byte delta
+     * @return the signed "+NNMB"/"-NNMB" string
+     */
+    public static String formatMbDelta(long bytes) {
+        final long mb = mb(bytes);
+        return (mb >= 0 ? "+" : "") + mb + "MB";
+    }
+
+    /**
+     * Round a byte count to whole megabytes (banker-free half-up rounding).
+     */
+    private static long mb(long bytes) {
+        return Math.round(bytes / (1024.0 * 1024.0));
+    }
+
+    /**
+     * Fold a TPS reading into the lock-free milli-TPS accumulator encoding
+     * (tps*1000 as a long) so the minimum over a job can be tracked with an
+     * atomic min. Pure so the folding math is unit testable.
+     *
+     * @param tps a ticks-per-second reading
+     * @return the reading encoded as {@code round(tps*1000)}
+     */
+    public static long tpsToMilli(double tps) {
+        return Math.round(tps * 1000.0);
+    }
+
+    /**
+     * Minimum of a milli-TPS accumulator and a new TPS reading (encoded).
+     *
+     * @param currentMinMilli the running minimum (milli-TPS)
+     * @param tps a new ticks-per-second reading
+     * @return the smaller of the two, in milli-TPS
+     */
+    public static long minTpsMilli(long currentMinMilli, double tps) {
+        return Math.min(currentMinMilli, tpsToMilli(tps));
+    }
+
+    /**
      * Build a per job completion line. The wall time is floored to 1ms (like
      * the buffered engine) so avg is always finite.
      *
@@ -94,6 +148,40 @@ public final class EngineStats {
     }
 
     /**
+     * Build a per job completion line enriched with the memory and smoothness
+     * telemetry sampled during the job. When {@code hasSamples} is false (the
+     * job finished with no run sampled, e.g. debug toggled mid job) only the
+     * base line is returned so the extra fields never print misleading zeros.
+     *
+     * IMPORTANT: heap-peak/heap-delta/minTPS are SERVER-GLOBAL samples taken
+     * during the job's lifetime, not isolated to this job - meaningful for the
+     * single-active-job A/B (one builder pasting); with concurrent jobs they
+     * overlap.
+     *
+     * @param engine engine label ("buffered" or "classic")
+     * @param jobId the job id
+     * @param blocks number of blocks placed
+     * @param wallMs elapsed wall time in milliseconds
+     * @param hasSamples whether any per run sample was folded into this job
+     * @param peakHeapBytes max used heap seen during the job (bytes)
+     * @param heapDeltaBytes peak used heap minus used heap at job start (bytes)
+     * @param minTps minimum TPS estimate seen during the job
+     * @param budgetExceeded number of sampled runs that exceeded the tick budget
+     * @return the formatted completion line, with the telemetry fields appended
+     */
+    public static String jobLine(String engine, int jobId, long blocks, long wallMs,
+            boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
+            double minTps, int budgetExceeded) {
+        final String base = jobLine(engine, jobId, blocks, wallMs);
+        if (!hasSamples) {
+            return base;
+        }
+        return base + String.format(
+                "  heap-peak=%s heap-delta=%s minTPS=%.1f budget-exceeded=%d",
+                formatMb(peakHeapBytes), formatMbDelta(heapDeltaBytes), minTps, budgetExceeded);
+    }
+
+    /**
      * The buffered engine completion line.
      */
     public static String bufferedJobLine(int jobId, long blocks, long wallMs) {
@@ -101,9 +189,29 @@ public final class EngineStats {
     }
 
     /**
+     * The buffered engine completion line with memory + smoothness telemetry.
+     */
+    public static String bufferedJobLine(int jobId, long blocks, long wallMs,
+            boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
+            double minTps, int budgetExceeded) {
+        return jobLine("buffered", jobId, blocks, wallMs, hasSamples,
+                peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded);
+    }
+
+    /**
      * The classic engine completion line.
      */
     public static String classicJobLine(int jobId, long blocks, long wallMs) {
         return jobLine("classic", jobId, blocks, wallMs);
+    }
+
+    /**
+     * The classic engine completion line with memory + smoothness telemetry.
+     */
+    public static String classicJobLine(int jobId, long blocks, long wallMs,
+            boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
+            double minTps, int budgetExceeded) {
+        return jobLine("classic", jobId, blocks, wallMs, hasSamples,
+                peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded);
     }
 }
