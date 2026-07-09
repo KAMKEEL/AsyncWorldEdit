@@ -151,7 +151,36 @@ public class ConfigProvider {
      * The overrides for AWE mode
      */
     private static ConfigOverrides m_overrides;
-        
+
+    /**
+     * The block placement engine configuration
+     */
+    private static ConfigEngine m_configEngine;
+
+    /**
+     * The resolved active engine: buffered only when the buffer-first mode
+     * is selected AND BlocksHub access checking is disabled (buffered mode
+     * bypasses the per block access hooks)
+     */
+    private static boolean m_bufferedEngineActive;
+
+    /**
+     * The engine configuration
+     * @return
+     */
+    public static ConfigEngine engine() {
+        return m_configEngine;
+    }
+
+    /**
+     * True when the buffer-first placement engine is active (buffered mode
+     * selected and compatible with the current BlocksHub configuration)
+     * @return
+     */
+    public static boolean isBufferedEngine() {
+        return m_bufferedEngineActive;
+    }
+
     /**
      * Get the undo configuration
      * @return 
@@ -356,11 +385,40 @@ public class ConfigProvider {
         m_configPermission = new ConfigPermission(mainSection.getConfigurationSection("permissions"));
         m_configUndo = new ConfigUndo(mainSection.getConfigurationSection("undo"));
         m_configMessages = new ConfigMessages(mainSection.getConfigurationSection("messages"));
-        
-        parseGroupsSection(mainSection.getConfigurationSection("permissionGroups"));        
+        m_configEngine = new ConfigEngine(mainSection.getConfigurationSection("engine"));
+
+        parseGroupsSection(mainSection.getConfigurationSection("permissionGroups"));
         m_disabledOperations = parseOperationsSection(mainSection);
 
+        resolveEngine();
+
         return true;
+    }
+
+    /**
+     * Resolve and log the active placement engine. Buffered mode is
+     * incompatible with BlocksHub access checking (it bypasses the per block
+     * access hooks); when access checking is enabled buffered mode is
+     * disabled and all blocks are routed through the classic path.
+     */
+    private static void resolveEngine() {
+        boolean accessChecking = m_configBlocksHub != null
+                && m_configBlocksHub.getCheckAccess() != BHLevel.Disabled;
+
+        if (m_configEngine.isBuffered() && accessChecking) {
+            m_bufferedEngineActive = false;
+            log("AWE engine: buffered (buffer-first) mode is incompatible with "
+                    + "BlocksHub access checking - routing all blocks through classic placement.");
+        } else {
+            m_bufferedEngineActive = m_configEngine.isBuffered();
+        }
+
+        log("AWE block placement engine: "
+                + (m_bufferedEngineActive
+                        ? "buffered (buffer-first direct chunk placement)"
+                        : "classic (per block placement)"));
+
+        org.primesoft.asyncworldedit.chunkbatch.EngineDebug.setEnabled(m_configEngine.isDebug());
     }
 
     /**

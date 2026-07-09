@@ -1,6 +1,23 @@
 awe:
   #Do not change
   version: 21
+  #block placement engine (experimental buffer-first branch)
+  engine:
+    #placement engine:
+    # buffered = buffer-first: async edits are buffered straight into per job
+    #   chunk section buffers (no per block queue entry object) and flushed as
+    #   direct chunk writes when the job finishes; lowest memory + fastest.
+    #   Requires BlocksHub access checking to be disabled (it bypasses the per
+    #   block access hooks); when access checking is on AWE logs one line and
+    #   falls back to classic automatically.
+    # classic = per block placement (the previous/direct-chunk pipeline)
+    mode: buffered
+    #per job undo log memory budget (MB) before it spools to a temp file
+    #(reserved for the packed per job undo log; the current build records undo
+    #through WorldEdit's operation time change set)
+    undo-spool-threshold-mb: 8
+    #verbose engine logging: per placer run + per job completion stats
+    debug: false
   rendering:
     #amount of time (in ticks) the server will place a chunk of blocks
     interval: 1

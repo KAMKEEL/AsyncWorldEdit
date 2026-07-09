@@ -547,7 +547,17 @@ public class ChunkBatchWriter {
      * delete its tile.
      */
     public void clearPending(IWorld bukkitWorld, Vector location) {
-        if (!isOverlayVisibleToThisThread() || bukkitWorld == null || location == null) {
+        if (bukkitWorld == null || location == null) {
+            return;
+        }
+
+        //Buffer-first engine: a classic path write here must also drop any
+        //block the buffered engine holds at this position, so the stale
+        //buffered value is not flushed over the newer classic write.
+        JobBufferRegistry.getInstance().clearBuffered(bukkitWorld,
+                location.getBlockX(), location.getBlockY(), location.getBlockZ());
+
+        if (!isOverlayVisibleToThisThread()) {
             return;
         }
 
@@ -602,12 +612,27 @@ public class ChunkBatchWriter {
     }
 
     /**
+     * The pending slot for a position, consulting first this window's own
+     * overlay (main thread) and then the buffer-first engine overlay (the
+     * producer thread's own job buffer). {@link SectionMath#EMPTY_SLOT} when
+     * nothing is pending.
+     */
+    private int resolveSlot(IWorld bukkitWorld, Vector location) {
+        int slot = pendingSlot(bukkitWorld, location);
+        if (slot != SectionMath.EMPTY_SLOT) {
+            return slot;
+        }
+        return JobBufferRegistry.getInstance().overlayGet(bukkitWorld,
+                location.getBlockX(), location.getBlockY(), location.getBlockZ());
+    }
+
+    /**
      * Read a block with read-your-writes semantics: a position with a
      * pending block returns the pending block, everything else is read
      * from the world.
      */
     public BaseBlock getBlock(World parent, IWorld bukkitWorld, Vector location) {
-        int slot = pendingSlot(bukkitWorld, location);
+        int slot = resolveSlot(bukkitWorld, location);
         if (slot != SectionMath.EMPTY_SLOT) {
             return new BaseBlock(SectionMath.slotId(slot), SectionMath.slotData(slot));
         }
@@ -619,7 +644,7 @@ public class ChunkBatchWriter {
      * Read a block id with read-your-writes semantics
      */
     public int getBlockType(World parent, IWorld bukkitWorld, Vector location) {
-        int slot = pendingSlot(bukkitWorld, location);
+        int slot = resolveSlot(bukkitWorld, location);
         if (slot != SectionMath.EMPTY_SLOT) {
             return SectionMath.slotId(slot);
         }
@@ -631,7 +656,7 @@ public class ChunkBatchWriter {
      * Read a block metadata value with read-your-writes semantics
      */
     public int getBlockData(World parent, IWorld bukkitWorld, Vector location) {
-        int slot = pendingSlot(bukkitWorld, location);
+        int slot = resolveSlot(bukkitWorld, location);
         if (slot != SectionMath.EMPTY_SLOT) {
             return SectionMath.slotData(slot);
         }
@@ -643,7 +668,7 @@ public class ChunkBatchWriter {
      * Read a lazy block with read-your-writes semantics
      */
     public BaseBlock getLazyBlock(World parent, IWorld bukkitWorld, Vector location) {
-        int slot = pendingSlot(bukkitWorld, location);
+        int slot = resolveSlot(bukkitWorld, location);
         if (slot != SectionMath.EMPTY_SLOT) {
             return new BaseBlock(SectionMath.slotId(slot), SectionMath.slotData(slot));
         }
@@ -741,6 +766,42 @@ public class ChunkBatchWriter {
                     log("Error while replaying deferred batched block: " + ex);
                 }
             }
+        }
+    }
+
+    /**
+     * Flush a single externally owned pending chunk (a buffer-first engine
+     * job buffer) reusing the batch writer's direct NMS write, sub threshold
+     * classic replay and attachment deferral. Main thread only. Deferred
+     * attachments are replayed at the end of this call so a torch always
+     * lands after the supports of this chunk.
+     *
+     * @param parent the WorldEdit world for the classic replay
+     * @param bukkitWorld the AWE world for the direct chunk writes
+     * @param chunk the detached pending chunk
+     */
+    public void flushJobChunk(World parent, IWorld bukkitWorld, PendingChunk chunk) {
+        if (parent == null || bukkitWorld == null || chunk == null) {
+            return;
+        }
+
+        final List<DeferredBlock> deferred = new ArrayList<DeferredBlock>();
+        try {
+            final org.bukkit.World bukkit = resolveBukkitWorld(bukkitWorld);
+            if (bukkit == null) {
+                //No Bukkit world: classic replay the whole chunk
+                classicPlaceChunk(parent, chunk, deferred);
+            } else {
+                flushChunk(new WorldBatch(parent, bukkit), chunk, deferred);
+            }
+        } catch (Throwable ex) {
+            if (!m_flushErrorLogged) {
+                m_flushErrorLogged = true;
+                log("Error while flushing buffered chunk " + chunk.getX()
+                        + "," + chunk.getZ() + ": " + ex);
+            }
+        } finally {
+            replayDeferred(deferred);
         }
     }
 

@@ -76,6 +76,7 @@ import org.primesoft.asyncworldedit.api.utils.IAsyncCommand;
 import org.primesoft.asyncworldedit.api.worldedit.ICancelabeEditSession;
 import org.primesoft.asyncworldedit.api.worldedit.IThreadSafeEditSession;
 import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
+import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
 import org.primesoft.asyncworldedit.configuration.ConfigMemory;
 import org.primesoft.asyncworldedit.configuration.ConfigRenderer;
 import org.primesoft.asyncworldedit.core.AwePlatform;
@@ -273,8 +274,10 @@ public class BlockPlacer implements IBlockPlacer {
             m_task.queueStop();
         }
 
-        //Reload may disable the feature - flush carried over batches first
+        //Reload may disable the feature or switch the engine - flush carried
+        //over batches AND buffered job writes first so nothing is lost
         ChunkBatchWriter.getInstance().forceFlush();
+        JobBufferRegistry.getInstance().forceFlush();
         ChunkBatchWriter.getInstance().configure(rConfig.isDirectChunkEnabled(),
                 rConfig.getDirectChunkMinBlocksPerChunk());
 
@@ -371,9 +374,10 @@ public class BlockPlacer implements IBlockPlacer {
         }
 
         if (task.isShutingDown()) {
-            //Never lose batched blocks carried over from a previous run:
-            //flush them fully, ignoring the tick budget
+            //Never lose batched blocks carried over from a previous run, nor
+            //buffered job writes: flush them fully, ignoring the tick budget
             ChunkBatchWriter.getInstance().forceFlush();
+            JobBufferRegistry.getInstance().forceFlush();
 
             IPlayerEntry[] entries;
             synchronized (m_mutex) {
@@ -403,9 +407,11 @@ public class BlockPlacer implements IBlockPlacer {
             }
         }
         
-        //Run the queue drain also when only carried over batches are left:
-        //processQueue flushes those in its window even with empty queues
-        boolean blockPlaced = (!groups.isEmpty() || ChunkBatchWriter.getInstance().hasCarryOver())
+        //Run the queue drain also when only carried over batches or buffered
+        //job writes are left: processQueue flushes those even with empty queues
+        boolean blockPlaced = (!groups.isEmpty()
+                || ChunkBatchWriter.getInstance().hasCarryOver()
+                || JobBufferRegistry.getInstance().hasWork())
                 && processQueue(processedGroups, blocksPlaced, jobsToCancel);
 
         if (m_globalQueueLocked) {
@@ -486,8 +492,9 @@ public class BlockPlacer implements IBlockPlacer {
                 } else {
                     if (entry.isDemanding()) {
                         //Demanding entries (i.e. chunk regeneration) must see
-                        //the world with all batched blocks applied
+                        //the world with all batched AND buffered blocks applied
                         batchWriter.flush();
+                        JobBufferRegistry.getInstance().forceFlush();
                     }
 
                     entry.process(this);
@@ -522,21 +529,37 @@ public class BlockPlacer implements IBlockPlacer {
             //processing: chunks are flushed one at a time and once the
             //budget is used up the remaining chunks carry over to the next
             //placer run (at least one chunk is always flushed).
-            batchWriter.closeWindow(new ChunkBatchWriter.IFlushLimit() {
-                @Override
-                public boolean shouldContinue() {
-                    return m_tickBudget.shouldContinue(System.nanoTime() - startNanos);
-                }
-            });
+            final ChunkBatchWriter.IFlushLimit flushLimit
+                    = new ChunkBatchWriter.IFlushLimit() {
+                        @Override
+                        public boolean shouldContinue() {
+                            return m_tickBudget.shouldContinue(System.nanoTime() - startNanos);
+                        }
+                    };
+            batchWriter.closeWindow(flushLimit);
+
+            //Drain the buffer-first engine's job buffers under the SAME tick
+            //budget and the same carry-over semantics: ready jobs flush their
+            //chunks round robin, unflushed chunks carry over to the next run.
+            JobBufferRegistry.getInstance().drainRoundRobin(flushLimit);
         }
 
+        final JobBufferRegistry registry = JobBufferRegistry.getInstance();
         if (ConfigProvider.messages().isDebugOn()) {
             log(String.format("[BP RUN] Blocks: %d\tTime: %d\tDemanding: %s\tTPS: %.1f\tBudget: %dms%s",
                     blocks, (System.currentTimeMillis() - startTime), demanding ? "Y" : "N",
                     m_tickBudget.getTpsEstimate(), m_tickBudget.getBudgetNanos() / 1000000,
                     budgetExceeded ? " (exceeded)" : ""));
         }
-        return blocks > 0;
+        if (ConfigProvider.engine() != null && ConfigProvider.engine().isDebug()) {
+            log(String.format(
+                    "[ENGINE] jobs=%d buffered-flushed=%d chunks-flushed=%d chunks-carried=%d sections-live=%d/%d",
+                    registry.getBufferCount(), registry.getLastFlushedBlocks(),
+                    registry.getLastFlushedChunks(), registry.getLastCarriedChunks(),
+                    org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getUsed(),
+                    org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getMaxSections()));
+        }
+        return blocks > 0 || registry.getLastFlushedBlocks() > 0;
     }
 
     /**
@@ -625,9 +648,10 @@ public class BlockPlacer implements IBlockPlacer {
     public void stop() {
         m_task.stop();
 
-        //Plugin disable: batched blocks carried over between runs must be
-        //written out now or they are lost
+        //Plugin disable: batched blocks carried over between runs and buffered
+        //job writes must be written out now or they are lost
         ChunkBatchWriter.getInstance().forceFlush();
+        JobBufferRegistry.getInstance().forceFlush();
 
         BlockPlacerPlayer[] entries;
         synchronized (m_mutex) {
@@ -1103,7 +1127,10 @@ public class BlockPlacer implements IBlockPlacer {
         double time = 0;
 
         if (player != null) {
-            blocks = player.getQueue().size();
+            //Count buffered (buffer-first engine) blocks too so progress and
+            ///awe status stay truthful - buffered writes are not in the queue
+            blocks = player.getQueue().size()
+                    + JobBufferRegistry.getInstance().getBufferedCount(player.getPlayer());
             speed = player.getSpeed();
         }
         if (speed > 0) {
@@ -1168,7 +1195,8 @@ public class BlockPlacer implements IBlockPlacer {
 
         if (entry != null) {
             jobs = entry.getJobs().length;
-            blocks = entry.getQueue().size();
+            blocks = entry.getQueue().size()
+                    + JobBufferRegistry.getInstance().getBufferedCount(entry.getPlayer());
             maxBlocks = entry.getMaxQueueBlocks();
             speed = entry.getSpeed();
         }

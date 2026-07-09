@@ -91,7 +91,10 @@ import org.primesoft.asyncworldedit.blockPlacer.entries.WorldFuncEntryEx;
 import org.primesoft.asyncworldedit.api.utils.IAction;
 import org.primesoft.asyncworldedit.api.utils.IFunc;
 import org.primesoft.asyncworldedit.api.utils.IFuncEx;
+import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
+import org.primesoft.asyncworldedit.chunkbatch.BatchEligibility;
 import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
+import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
 import org.primesoft.asyncworldedit.utils.MutexProvider;
 import org.primesoft.asyncworldedit.worldedit.AsyncEditSession;
 import org.primesoft.asyncworldedit.worldedit.CancelabeEditSession;
@@ -330,14 +333,45 @@ public class AsyncWorld extends AbstractWorldWrapper {
             if (!canPlace(player, m_bukkitWorld, vector, getBlock(v), newBlock)) {
                 return false;
             }
-            
+
+            if (bufferBlock(player, paramBlock.getJobId(), v, newBlock, bln)) {
+                return true;
+            }
+
             return m_blockPlacer.addTasks(player,
                     new WorldFuncEntryEx(this.getName(), paramBlock.getJobId(), v, func));
         }
-        
+
         return func.execute();
     }
-    
+
+    /**
+     * Buffer-first engine: buffer a plain (no NBT) block write straight into
+     * the job's chunk buffers instead of creating a per block queue entry.
+     * The disallowed-blocks blacklist is enforced by the caller's canPlace
+     * before this is reached; buffered mode only runs when BlocksHub access
+     * checking is disabled, so no per block access / old-block work is done
+     * here and the isSame short circuit is intentionally dropped (a same
+     * value rewrite is cheap to buffer and last-write-wins is preserved).
+     *
+     * @return true when the block was buffered (the caller is done); false
+     * when the buffer is not used (wrong engine, not batchable, or the
+     * shared section budget is full) and the caller must use the classic
+     * queue path
+     */
+    private boolean bufferBlock(IPlayerEntry player, int jobId, Vector v,
+            BaseBlock newBlock, boolean notify) {
+        if (!ConfigProvider.isBufferedEngine()
+                || !BatchEligibility.isBatchable(newBlock, v.getBlockY())) {
+            return false;
+        }
+
+        final IJobEntry job = m_blockPlacer.getJob(player, jobId);
+        return JobBufferRegistry.getInstance().buffer(player, jobId, m_parent,
+                m_bukkitWorld, job, v.getBlockX(), v.getBlockY(), v.getBlockZ(),
+                newBlock.getType(), newBlock.getData(), notify);
+    }
+
     @Override
     public boolean setBlockType(Vector vector, final int i) {
         final DataAsyncParams<Vector> param = DataAsyncParams.extract(vector);
@@ -453,14 +487,18 @@ public class AsyncWorld extends AbstractWorldWrapper {
             if (!canPlace(player, m_bukkitWorld, vector, getBlock(v), newBlock)) {
                 return false;
             }
-            
+
+            if (bufferBlock(player, param.getJobId(), v, newBlock, true)) {
+                return true;
+            }
+
             return m_blockPlacer.addTasks(player,
                     new WorldFuncEntry(this.getName(), param.getJobId(), v, func));
         }
-        
+
         return func.execute();
     }
-    
+
     @Override
     public int getBlockLightLevel(final Vector vector) {
         return m_dispatcher.performSafe(MutexProvider.getMutex(getWorld()), new IFunc<Integer>() {

@@ -112,6 +112,15 @@ public class BlockPlacerPlayer implements IBlockPlacerPlayer {
     }
 
     /**
+     * The owning player entry
+     *
+     * @return
+     */
+    public IPlayerEntry getPlayer() {
+        return m_player;
+    }
+
+    /**
      * Maximum number of blocks on queue
      *
      * @return
