@@ -828,12 +828,15 @@ public final class JobBufferRegistry {
 
     /**
      * Per job completion debug line (total blocks, wall ms, avg blocks/sec)
-     * enriched with the buffered job's memory + smoothness telemetry. When the
-     * buffer's IJobEntry is null (loose writes) or was never sampled, only the
-     * base line prints (blocks/wall/avg).
+     * enriched with the buffered job's memory + smoothness telemetry. Loose
+     * write buffers (no registered IJobEntry, e.g. the //undo replay's
+     * jobId -1 writes) print nothing: such a buffer flushes and prunes
+     * every drain, so a "completion" line per fragment is pure log spam -
+     * their throughput shows in the per run [ENGINE] line instead. A real
+     * job that was never sampled prints only the base line (blocks/wall/avg).
      */
     private static void logJobDone(JobBuffer buf) {
-        if (!EngineDebug.isEnabled()) {
+        if (!EngineDebug.isEnabled() || buf.getJob() == null) {
             return;
         }
         final long total = buf.getTotalFlushed();
