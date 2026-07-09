@@ -165,6 +165,13 @@ public class ConfigProvider {
     private static boolean m_bufferedEngineActive;
 
     /**
+     * The engine mode the admin/config asked for (buffered when true). This
+     * may differ from {@link #m_bufferedEngineActive} when buffered was
+     * requested but forced to classic by BlocksHub access checking.
+     */
+    private static boolean m_bufferedEngineRequested;
+
+    /**
      * The engine configuration
      * @return
      */
@@ -178,6 +185,62 @@ public class ConfigProvider {
      * @return
      */
     public static boolean isBufferedEngine() {
+        return m_bufferedEngineActive;
+    }
+
+    /**
+     * True when buffered mode was requested (by config or a live switch),
+     * regardless of whether it was forced to classic.
+     * @return
+     */
+    public static boolean isBufferedEngineRequested() {
+        return m_bufferedEngineRequested;
+    }
+
+    /**
+     * True when buffered mode was requested but forced to classic because
+     * BlocksHub access checking is enabled.
+     * @return
+     */
+    public static boolean isBufferedForcedToClassic() {
+        return m_bufferedEngineRequested && !m_bufferedEngineActive;
+    }
+
+    /**
+     * True when BlocksHub access checking is enabled (buffered mode bypasses
+     * the per block access hooks, so the two are incompatible).
+     * @return
+     */
+    public static boolean isBlocksHubAccessChecking() {
+        return m_configBlocksHub != null
+                && m_configBlocksHub.getCheckAccess() != BHLevel.Disabled;
+    }
+
+    /**
+     * Pure resolution of the active engine from the requested mode and the
+     * BlocksHub access checking state: buffered is active only when it was
+     * requested AND access checking is off.
+     *
+     * @param requestBuffered buffered mode requested
+     * @param accessChecking BlocksHub access checking enabled
+     * @return whether the buffered engine is active
+     */
+    static boolean resolveBufferedActive(boolean requestBuffered, boolean accessChecking) {
+        return requestBuffered && !accessChecking;
+    }
+
+    /**
+     * Live switch of the placement engine mode. Enforces the same
+     * incompatibility rule as {@link #resolveEngine()}: buffered cannot be
+     * enabled while BlocksHub access checking is on, in which case the switch
+     * is refused and the engine stays classic.
+     *
+     * @param buffered request the buffered engine
+     * @return the resolved active state (true = buffered, false = classic)
+     */
+    public static boolean setBufferedEngineActive(boolean buffered) {
+        m_bufferedEngineRequested = buffered;
+        m_bufferedEngineActive = resolveBufferedActive(buffered, isBlocksHubAccessChecking());
         return m_bufferedEngineActive;
     }
 
@@ -402,15 +465,14 @@ public class ConfigProvider {
      * disabled and all blocks are routed through the classic path.
      */
     private static void resolveEngine() {
-        boolean accessChecking = m_configBlocksHub != null
-                && m_configBlocksHub.getCheckAccess() != BHLevel.Disabled;
+        boolean accessChecking = isBlocksHubAccessChecking();
 
-        if (m_configEngine.isBuffered() && accessChecking) {
-            m_bufferedEngineActive = false;
+        m_bufferedEngineRequested = m_configEngine.isBuffered();
+        m_bufferedEngineActive = resolveBufferedActive(m_bufferedEngineRequested, accessChecking);
+
+        if (m_bufferedEngineRequested && accessChecking) {
             log("AWE engine: buffered (buffer-first) mode is incompatible with "
                     + "BlocksHub access checking - routing all blocks through classic placement.");
-        } else {
-            m_bufferedEngineActive = m_configEngine.isBuffered();
         }
 
         log("AWE block placement engine: "

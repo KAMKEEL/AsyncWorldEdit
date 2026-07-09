@@ -6,14 +6,14 @@
  * All rights reserved.
  *
  * Redistribution in source, use in source and binary forms, with or without
- * modification, are permitted free of charge provided that the following 
+ * modification, are permitted free of charge provided that the following
  * conditions are met:
  *
  * 1.  Redistributions of source code must retain the above copyright notice, this
  *     list of conditions and the following disclaimer.
  * 2.  Redistributions of source code, with or without modification, in any form
  *     other then free of charge is not allowed,
- * 3.  Redistributions of source code, with tools and/or scripts used to build the 
+ * 3.  Redistributions of source code, with tools and/or scripts used to build the
  *     software is not allowed,
  * 4.  Redistributions of source code, with information on how to compile the software
  *     is not allowed,
@@ -45,54 +45,55 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-package org.primesoft.asyncworldedit.core;
+package org.primesoft.asyncworldedit.configuration;
 
-import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
-import org.primesoft.asyncworldedit.commands.Commands;
-import org.primesoft.asyncworldedit.strings.MessageType;
+import static org.junit.Assert.*;
+import org.junit.After;
+import org.junit.Test;
+import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
 
 /**
+ * Pure logic tests for the live engine switching command:
+ * <ul>
+ * <li>the BlocksHub access-checking gate (buffered requested while access
+ * checking is on stays classic; while off it switches to buffered)</li>
+ * <li>the engine debug toggle</li>
+ * </ul>
  *
- * @author SBPrime
+ * @author KAMKEEL
  */
-public final class Help {
-    /**
-     * Show help for command
-     * @param player THe player invoking the command
-     * @param command The command to show the help for
-     * @return 
-     */
-    public static boolean ShowHelp(IPlayerEntry player, String command) {
-        MessageType helpMessage = MessageType.CMD_HELP_GLOBAL;
+public class EngineSwitchTest {
 
-        if (command != null) {
-            if (command.equalsIgnoreCase(Commands.COMMAND_PURGE)) {
-                helpMessage = MessageType.CMD_HELP_PURGE;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_JOBS)) {
-                helpMessage = MessageType.CMD_HELP_JOBS;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_TOGGLE)) {
-                helpMessage = MessageType.CMD_HELP_TOGGLE;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_UNDO)) {
-                helpMessage = MessageType.CMD_HELP_UNDO;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_SPEED)) {
-                helpMessage = MessageType.CMD_HELP_SPEED;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_ENGINE)) {
-                helpMessage = MessageType.CMD_HELP_ENGINE;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_RELOAD)) {
-                helpMessage = MessageType.CMD_HELP_RELOAD;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_CANCEL)) {
-                helpMessage = MessageType.CMD_HELP_CANCEL;
-            } else if (command.equalsIgnoreCase(Commands.COMMAND_MESSAGES)) {
-                helpMessage = MessageType.CMD_HELP_MESSAGE;
-            }
-        }
+    @After
+    public void resetDebug() {
+        EngineDebug.setEnabled(false);
+    }
 
-        String[] help = helpMessage.format().split("\n");
-        
-        for (String string : help) {
-            player.say(string);
-        }
+    @Test
+    public void bufferedRequestedWithAccessCheckingOffSwitches() {
+        assertTrue(ConfigProvider.resolveBufferedActive(true, false));
+    }
 
-        return true;
+    @Test
+    public void bufferedRequestedWithAccessCheckingOnStaysClassic() {
+        assertFalse(ConfigProvider.resolveBufferedActive(true, true));
+    }
+
+    @Test
+    public void classicRequestedIsNeverBuffered() {
+        assertFalse(ConfigProvider.resolveBufferedActive(false, false));
+        assertFalse(ConfigProvider.resolveBufferedActive(false, true));
+    }
+
+    @Test
+    public void debugToggle() {
+        EngineDebug.setEnabled(false);
+        assertFalse(EngineDebug.isEnabled());
+
+        EngineDebug.setEnabled(true);
+        assertTrue(EngineDebug.isEnabled());
+
+        EngineDebug.setEnabled(false);
+        assertFalse(EngineDebug.isEnabled());
     }
 }

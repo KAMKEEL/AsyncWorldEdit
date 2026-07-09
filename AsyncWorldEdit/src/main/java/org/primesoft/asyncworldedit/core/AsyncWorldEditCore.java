@@ -473,6 +473,9 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
         } else if (name.equalsIgnoreCase(Commands.COMMAND_SPEED)) {
             doSpeed(player, args);
             return true;
+        } else if (name.equalsIgnoreCase(Commands.COMMAND_ENGINE)) {
+            doEngine(player, args);
+            return true;
         } else if (name.equalsIgnoreCase(Commands.COMMAND_MESSAGES)) {
             doMessages(player, args);
             return true;
@@ -598,6 +601,21 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
         }
 
         SpeedCommand.Execte(this, player, args);
+    }
+
+    /**
+     * Perform the engine command
+     *
+     * @param player
+     * @param args
+     */
+    private void doEngine(IPlayerEntry player, String[] args) {
+        if (!m_isInitialized) {
+            player.say(MessageType.NOT_INITIALIZED.format());
+            return;
+        }
+
+        EngineCommand.Execte(this, player, args);
     }
 
     /**

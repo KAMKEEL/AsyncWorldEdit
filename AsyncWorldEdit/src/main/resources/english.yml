@@ -35,7 +35,7 @@ LOADING_REDO: "[GREEN]Loading redo data..."
 CMD_RELOAD_ERROR: "[RED]Error loading config"
 CMD_RELOAD_DONE: "[GREEN]Reload done"
 #The help command
-CMD_HELP_GLOBAL: "[YELLOW]Async WorldEdit help:\n[BLUE]Help[WHITE] - display help screen\n[BLUE]Jobs[WHITE] - display queued block operations\n[BLUE]Cancel[WHITE] - cancel queued job\n[BLUE]Purge[WHITE] - remove all queued block operations\n[BLUE]Toggle[WHITE] - toggle AsyncWorldEdit on/off\n[BLUE]Undo[WHITE] - toggle Undo on/off\n[BLUE]Speed[WHITE] - change the block placing speed\n[BLUE]Messages[WHITE] - to configure AsyncWorldEdit messages\n[BLUE]Reload[WHITE] - reload configuration\n[YELLOW]To display help on command use: [BLUE]/awe help <command>"
+CMD_HELP_GLOBAL: "[YELLOW]Async WorldEdit help:\n[BLUE]Help[WHITE] - display help screen\n[BLUE]Jobs[WHITE] - display queued block operations\n[BLUE]Cancel[WHITE] - cancel queued job\n[BLUE]Purge[WHITE] - remove all queued block operations\n[BLUE]Toggle[WHITE] - toggle AsyncWorldEdit on/off\n[BLUE]Undo[WHITE] - toggle Undo on/off\n[BLUE]Speed[WHITE] - change the block placing speed\n[BLUE]Engine[WHITE] - switch the block placement engine / toggle debug\n[BLUE]Messages[WHITE] - to configure AsyncWorldEdit messages\n[BLUE]Reload[WHITE] - reload configuration\n[YELLOW]To display help on command use: [BLUE]/awe help <command>"
 CMD_HELP_SPEED: "[YELLOW]Speed[WHITE] - change block placing speed\n[BLUE] Speed[WHITE] - Show current speed\n[BLUE] Speed <speed>[WHITE] - Change your block placing speed\n[BLUE] Speed <u:playerName>[WHITE] - Show speed for other player\n[BLUE] Speed <u:playerName> <speed>[WHITE] - change block placing speed for player\n[WHITE]  Use speedd [BLUE]<= 0[WHITE] for default"
 CMD_HELP_TOGGLE: "[YELLOW]Toggle[WHITE] - toggle AsyncWorldEdit on/off\n[BLUE] Toggle[WHITE] - toggle AsyncWorldEdit\n[BLUE] Toggle on[WHITE] - toggle AsyncWorldEdit on\n[BLUE] Toggle off[WHITE] - toggle AsyncWorldEdit off\n[BLUE] Toggle <u:playerName>[WHITE] - toggle AsyncWorldEdit\n[BLUE] Toggle <u:playerName> on[WHITE] - toggle AsyncWorldEdit on\n[BLUE] Toggle <u:playerName> off[WHITE] - toggle AsyncWorldEdit off"
 CMD_HELP_UNDO: "[YELLOW]Undo[WHITE] - toggle undo on/off\n[BLUE] Undo[WHITE] - toggle undo\n[BLUE] Undo on[WHITE] - toggle undo on\n[BLUE] Toggle off[WHITE] - toggle Undo off\n[BLUE] Undo <u:playerName>[WHITE] - toggle Undo\n[BLUE] Undo <u:playerName> on[WHITE] - toggle Undo on\n[BLUE] Undo <u:playerName> off[WHITE] - toggle Undo off"
@@ -44,6 +44,7 @@ CMD_HELP_MESSAGE: "[YELLOW]Messages[WHITE] - configure the messaging system\n[BL
 CMD_HELP_JOBS: "[YELLOW]Jobs[WHITE] - display queued block operations\n[BLUE] Jobs \\[page][WHITE] - displays your operations\n[BLUE] Jobs <u:playerName> \\[page][WHITE] - displays other player operations\n[BLUE] Jobs all [page][WHITE] - displays all queued operations"
 CMD_HELP_CANCEL: "[YELLOW]Cancel[WHITE] - cancel queued job\n[BLUE] Cancel #id[WHITE] - cancel your job\n[BLUE] Cancel <u:playerName> #id[WHITE] - cancel other player job"
 CMD_HELP_RELOAD: "[YELLOW]Reload[WHITE] - Reload AWE configuration file\n[BLUE] Reload All[WHITE] - reload configuration entries and update groups\n[BLUE] Reload Config[WHITE] - reload only the configuration\n[BLUE] Reload Groups[WHITE] - update only the player groups"
+CMD_HELP_ENGINE: "[YELLOW]Engine[WHITE] - switch the block placement engine (live A/B testing)\n[BLUE] Engine[WHITE] - show the active engine, debug state and live counters\n[BLUE] Engine buffered[WHITE] - switch to the buffer-first engine\n[BLUE] Engine classic[WHITE] - flush buffers and switch to classic placement\n[BLUE] Engine debug on|off[WHITE] - toggle verbose engine logging"
 #The message configuration
 CMD_MESSAGE_OK: "[YELLOW]Message [BLUE]%1$s[YELLOW] is now [BLUE]%2$s"
 CMD_MESSAGE_ON: "On"
@@ -52,6 +53,15 @@ CMD_MESSAGE_UNKNOWN: "[RED]Unknown message system: [YELLOW]%1$s"
 #The speed command
 CMD_SPEED: "[YELLOW]Block placing speed for [WHITE]%1$s [YELLOW] is [WHITE]%2$s blocks"
 CMD_SPEED_INVALID: "[RED]Invalid speed value [WHITE]%1$s"
+#The engine command
+CMD_ENGINE_STATUS: "[YELLOW]Block placement engine: [WHITE]%1$s[YELLOW], debug: [WHITE]%2$s"
+CMD_ENGINE_STATUS_FORCED: "[GOLD]Buffered was requested but forced to classic by BlocksHub access checking."
+CMD_ENGINE_STATUS_COUNTERS: "[YELLOW]Buffered jobs: [WHITE]%1$s[YELLOW], sections used: [WHITE]%2$s"
+CMD_ENGINE_SWITCHED: "[GREEN]Block placement engine switched to [WHITE]%1$s"
+CMD_ENGINE_REFUSED_ACCESS: "[RED]Cannot enable the buffered engine while BlocksHub access checking is enabled - staying classic."
+CMD_ENGINE_DEBUG: "[YELLOW]Engine debug is now [WHITE]%1$s"
+CMD_ENGINE_MODE_BUFFERED: "buffered"
+CMD_ENGINE_MODE_CLASSIC: "classic"
 #The undo command and mode changed
 CMD_UNDO_MODE_CHANGED: "[YELLOW]Your [BLUE]Undo [YELLOW]is now set to [WHITE]%1$s"
 CMD_UNDO_MODE_DONE: "[YELLOW]Undo is now set to [WHITE]%1$s"
