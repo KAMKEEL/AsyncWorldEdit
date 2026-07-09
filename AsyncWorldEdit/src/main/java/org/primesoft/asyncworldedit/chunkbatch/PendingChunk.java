@@ -298,6 +298,29 @@ public final class PendingChunk {
     }
 
     /**
+     * The write sequence of the pending block at a world position. Only
+     * meaningful when {@link #getPendingSlot} returned a non empty slot
+     * for the same position.
+     *
+     * @return the sequence of the position's last write, 0 when nothing
+     * is pending there
+     */
+    public int getPendingSeq(int x, int y, int z) {
+        if (SectionMath.blockToChunk(x) != m_cx
+                || SectionMath.blockToChunk(z) != m_cz
+                || y < 0 || y > 255) {
+            return 0;
+        }
+
+        PendingSection section = m_sections[SectionMath.sectionOfY(y)];
+        if (section == null) {
+            return 0;
+        }
+
+        return section.getSeq(SectionMath.sectionIndex(x, y, z));
+    }
+
+    /**
      * The pending section buffer, null when the section has no pending
      * blocks
      *
