@@ -292,6 +292,65 @@ threshold crossing + reload from file; segment-directory reverse
 streaming; undo-of-cancelled-job (partial); orphan cleanup; fallback
 switches. Two-thread producer/flush smoke with undo verification.
 
+### Phase 3 exploration findings (2026-07-10) - the wiring decision
+
+Explored before coding, per this plan. The core (ColumnarUndoLog) is
+committed and tested; this section fixes the adapter seams.
+
+1. Chain (outer->inner), all built in ThreadSafeEditSession
+   .injectChangeSet (L311-356): ExtendedChangeSetExtent (subclass of WE
+   ChangeSetExtent, routed via ProxyChangeSet) -> MemoryMonitorChangeSet
+   -> ThreadSafeChangeSet -> root (FileChangeSet on disk undo, else
+   BlockOptimizedHistory; NullChangeSet when undo off). Reflection puts
+   the changeset into the injected EditSession's private changeSet /
+   ChangeSetExtent fields - that reflection IS the substitution seam
+   (the injector ships shadow-compiled WE classes, no factory hook).
+   CancelabeEditSession clones share the PARENT's changeset (one per
+   AsyncEditSession, all jobs).
+2. Recording happens UPSTREAM of AsyncWorld: ExtendedChangeSetExtent
+   .setBlock (L98-102) does the dispatched old-block read and allocates
+   the BlockChange - this is where the buffered engine still pays one
+   world read + two BaseBlock + one BlockChange per block.
+3. SUPPRESSION SEAM (a): ExtendedChangeSetExtent.setBlock, gated on
+   isBufferedEngine && undo-mode==columnar && BatchEligibility
+   .isBatchable - the exact predicate of AsyncWorld.bufferBlock, so
+   precisely the buffer-eligible blocks skip object recording AND the
+   old-read. The jobId is available there via the IAsyncWrapper-wrapped
+   location (VectorWrapper carries it through the chain). Registration
+   of the per job ColumnarUndoLog happens at first suppression for a
+   (uuid, jobId) - CRITICAL: undo/redo replays write through
+   bypassHistory, never reach this extent, therefore never register a
+   log, therefore flush-time capture ignores their writes (no undo-of-
+   undo corruption). Budget-full fallbacks to the classic queue are
+   still captured at flush time (the buffer saw the write).
+4. CAPTURE SEAM: flush time. The NMS write path already reads old ids
+   (PendingSection.applyVanilla/applyId16 changed-visitor); extend it
+   to carry old/new data nibbles and bracket each section with
+   beginSection/capture/endSection. Sub-threshold classic-replay chunks
+   capture per block via the Phase 2 readRaw (small chunks, cheap).
+   Documented trade-off: a tile old-block overwritten by a buffered
+   write undoes to (id,data) without NBT; changeset mode keeps full
+   fidelity.
+5. COMPOSITE SEAM (b): build CompositeChangeSet as the new root in
+   injectChangeSet (keep MemoryMonitorChangeSet on top for the memory
+   policy on object changes); m_rootChangeSet = composite; teach the
+   three instanceof FileChangeSet sites to unwrap (SerializableSession-
+   List assignSession/releaseSession - which also provide the
+   initialize/close lifecycle hooks for the columnar spool files - and
+   CancelabeEditSession's ctor). backwardIterator must be LAZY and
+   marked IThreadSafeIterator (ThreadSafeChangeSet.wrapIterator
+   otherwise copies everything into an ArrayList) and IDisposable
+   (UndoProcessor.resume disposes -> releases the spool). Undo replay:
+   UndoProcessor iterates backwardIterator and applies through
+   bypassHistory; changes materialize lazily as BlockChange(BlockVector,
+   BaseBlock(oldId,oldData), BaseBlock(newId,newData)) per RLE run,
+   merged with object changes by the segment [firstSeq,lastSeq] ranges.
+6. Config: engine.undo-mode: columnar|changeset (changeset = bypass
+   both seams, exactly today's behavior); the existing undo-spool-
+   threshold-mb feeds the ColumnarUndoLog threshold. File lifecycle:
+   spool files live next to the session undo files, deleted by
+   composite close/dispose + the Cron sweep pattern.
+
 Adversarial review pass after implementation (same process that caught
 the 10 findings in the direct-chunk engine), then fixes, then the
 in-game gate.
