@@ -96,6 +96,28 @@ import org.primesoft.asyncworldedit.platform.bukkit.IBukkitWorld;
  * direct write ever throws, the writer permanently falls back to classic
  * placement (one clear log line).
  *
+ * ARCHITECTURE (final, Phase 4 decision): this window pool and the
+ * {@link JobBufferRegistry} job buffer pool intentionally coexist - they
+ * are NOT a redundant double representation:
+ * <ul>
+ * <li>The window pool batches on the MAIN THREAD, per placer run, per
+ * world, with no job identity: classic queue entries' final writes
+ * (each entry still runs its own per block bookkeeping - BlocksHub,
+ * counters, physics watcher - only the world write is deferred),
+ * budget-full classic fallbacks of buffered jobs, and loose writes such
+ * as //undo replays (job id -1). Its lifetime is one placer run.</li>
+ * <li>The job buffer pool is filled on the PRODUCER THREAD, per
+ * (player, job), with a job lifecycle: readiness, streaming
+ * watermark/staleness, cancel-drop and the bound undo capture sink.</li>
+ * <li>Both pools share the single {@link SectionBudget} (memory is
+ * bounded once) and both funnel into the same flush machinery here
+ * (direct NMS write, sub-threshold classic replay, attachment deferral,
+ * flush-time undo capture), so unification would only merge the
+ * bookkeeping of two different lifetimes while risking the pinned
+ * cross-pool ordering contracts (clearPending last-queued-wins,
+ * detach-before-flush).</li>
+ * </ul>
+ *
  * @author KAMKEEL
  */
 public class ChunkBatchWriter {

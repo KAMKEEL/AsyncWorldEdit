@@ -124,6 +124,12 @@ import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
  * and the first-capture-per-slot rule of the log keeps mid-job re-flushes
  * of a section from overwriting the original old values.
  *
+ * This produce-time pool coexists with the process-time window pool of
+ * {@link ChunkBatchWriter} by design (Phase 4 decision, rationale in that
+ * class's javadoc): the window serves main-thread inline writes, classic
+ * fallbacks and loose writes with no job identity; this pool serves the
+ * async job producers. One shared {@link SectionBudget} bounds both.
+ *
  * @author KAMKEEL
  */
 public final class JobBufferRegistry {
