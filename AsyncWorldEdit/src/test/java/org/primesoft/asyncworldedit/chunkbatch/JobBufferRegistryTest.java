@@ -69,6 +69,8 @@ import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.JobStatus;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
 
 /**
  * Pure logic tests for the buffer-first block placement engine coordinator:
@@ -92,9 +94,14 @@ public class JobBufferRegistryTest {
         final List<String> order = new CopyOnWriteArrayList<String>();
         final Map<String, int[]> latest = new ConcurrentHashMap<String, int[]>();
         final List<Integer> flushedChunkSizes = new CopyOnWriteArrayList<Integer>();
+        final List<ICaptureSink> captureSinks = new CopyOnWriteArrayList<ICaptureSink>();
 
         @Override
-        public void flush(World weWorld, IWorld aweWorld, final PendingChunk chunk) {
+        public void flush(World weWorld, IWorld aweWorld, final PendingChunk chunk,
+                ICaptureSink captureSink) {
+            if (captureSink != null) {
+                captureSinks.add(captureSink);
+            }
             flushedChunkSizes.add(chunk.getCount());
             chunk.forEachLastWriteOrder(new PendingChunk.IPendingBlockVisitor() {
                 @Override
@@ -245,6 +252,122 @@ public class JobBufferRegistryTest {
         j2.finish();
         reg.drainRoundRobin(NO_LIMIT, sink, false);
         assertEquals(0, reg.getBufferCount());
+    }
+
+    /**
+     * No-op capture sink; only its identity matters to the routing
+     */
+    private static final class FakeCaptureSink implements ICaptureSink {
+
+        @Override
+        public void beginSection(int cx, int cz, int section, int firstSeq, int lastSeq) {
+        }
+
+        @Override
+        public void capture(int slotIndex, int oldId, int oldData, int newId, int newData) {
+        }
+
+        @Override
+        public void endSection() {
+        }
+
+        @Override
+        public void captureCleared(int x, int y, int z, int oldId, int oldData,
+                int newId, int newData, int seq) {
+        }
+    }
+
+    @Test
+    public void registeredCaptureSinkRidesEveryFlushAndUnregistersOnPrune() {
+        JobBufferRegistry reg = new JobBufferRegistry();
+        IWorld world = aweWorld("world");
+        UUID uuid = new UUID(9, 9);
+        IPlayerEntry p = player(uuid);
+        FakeJob job = new FakeJob();
+
+        final FakeCaptureSink capture = new FakeCaptureSink();
+        try {
+            assertTrue(ColumnarUndoRegistry.register(uuid, 5, capture));
+
+            //Two chunks of the same job
+            buffer(reg, p, 5, job.proxy, world, 0, 64, 0, 1, 0);
+            buffer(reg, p, 5, job.proxy, world, 16, 64, 0, 2, 0);
+            job.finish();
+
+            RecordingSink sink = new RecordingSink();
+            reg.drainRoundRobin(NO_LIMIT, sink, false);
+
+            //Both chunk flushes carried the job's capture sink so the old
+            //values are captured before each write
+            assertEquals(2, sink.captureSinks.size());
+            assertSame(capture, sink.captureSinks.get(0));
+            assertSame(capture, sink.captureSinks.get(1));
+
+            //The drained job was pruned and its registration dropped
+            assertEquals(0, reg.getBufferCount());
+            assertNull(ColumnarUndoRegistry.get(uuid, 5));
+        } finally {
+            ColumnarUndoRegistry.unregister(uuid, 5);
+        }
+    }
+
+    @Test
+    public void unregisteredJobsFlushWithoutACaptureSink() {
+        JobBufferRegistry reg = new JobBufferRegistry();
+        IWorld world = aweWorld("world");
+        IPlayerEntry p = player(new UUID(10, 10));
+        FakeJob job = new FakeJob();
+
+        //Changeset mode / undo off / loose writes: nothing registered
+        buffer(reg, p, 6, job.proxy, world, 0, 64, 0, 1, 0);
+        job.finish();
+
+        RecordingSink sink = new RecordingSink();
+        reg.drainRoundRobin(NO_LIMIT, sink, false);
+
+        assertEquals(1, sink.flushedChunkSizes.size());
+        assertTrue("no registration = no capture, zero cost",
+                sink.captureSinks.isEmpty());
+    }
+
+    @Test
+    public void cancelDiscardUnregistersTheCaptureSink() {
+        JobBufferRegistry reg = new JobBufferRegistry();
+        IWorld world = aweWorld("world");
+        UUID uuid = new UUID(11, 11);
+        IPlayerEntry p = player(uuid);
+
+        //A job that reports canceled: its buffers are discarded, never
+        //placed, and the capture registration must not leak
+        final boolean[] canceled = new boolean[]{false};
+        IJobEntry job = (IJobEntry) Proxy.newProxyInstance(
+                JobBufferRegistryTest.class.getClassLoader(),
+                new Class<?>[]{IJobEntry.class}, new InvocationHandler() {
+            @Override
+            public Object invoke(Object o, Method m, Object[] a) {
+                if ("getStatus".equals(m.getName())) {
+                    return canceled[0] ? JobStatus.Canceled : JobStatus.PlacingBlocks;
+                }
+                return defaultValue(m);
+            }
+        });
+
+        final FakeCaptureSink capture = new FakeCaptureSink();
+        try {
+            assertTrue(ColumnarUndoRegistry.register(uuid, 7, capture));
+            buffer(reg, p, 7, job, world, 0, 64, 0, 1, 0);
+
+            canceled[0] = true;
+            RecordingSink sink = new RecordingSink();
+            reg.drainRoundRobin(NO_LIMIT, sink, false);
+
+            assertTrue("canceled buffers are dropped, not flushed",
+                    sink.flushedChunkSizes.isEmpty());
+            assertEquals(0, reg.getBufferCount());
+            assertNull(ColumnarUndoRegistry.get(uuid, 7));
+        } finally {
+            ColumnarUndoRegistry.unregister(uuid, 7);
+        }
     }
 
     @Test

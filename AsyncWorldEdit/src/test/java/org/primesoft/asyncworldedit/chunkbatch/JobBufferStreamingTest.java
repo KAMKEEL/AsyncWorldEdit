@@ -64,6 +64,7 @@ import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.JobStatus;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
 
 /**
  * Exact-value tests for the region streamed flushing of the buffer-first
@@ -91,7 +92,8 @@ public class JobBufferStreamingTest {
         final List<Long> flushedChunkKeys = new CopyOnWriteArrayList<Long>();
 
         @Override
-        public void flush(World weWorld, IWorld aweWorld, final PendingChunk chunk) {
+        public void flush(World weWorld, IWorld aweWorld, final PendingChunk chunk,
+                ICaptureSink captureSink) {
             flushedChunkKeys.add(SectionMath.chunkKey(chunk.getX(), chunk.getZ()));
             chunk.forEachLastWriteOrder(new PendingChunk.IPendingBlockVisitor() {
                 @Override

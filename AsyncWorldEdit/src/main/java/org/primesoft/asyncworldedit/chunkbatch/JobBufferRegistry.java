@@ -64,6 +64,8 @@ import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.JobStatus;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
 
 /**
  * Central coordinator of the buffer-first block placement engine.
@@ -114,10 +116,13 @@ import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
  * last-write-wins also holds across a mid-job flush.</li>
  * </ul>
  *
- * Undo is unaffected by streaming: WorldEdit's operation time change set
- * records the old block values when the producer writes them, before
- * anything is flushed to the world, so mid-job flushes cannot corrupt the
- * undo data.
+ * Undo is unaffected by streaming: in changeset mode WorldEdit's operation
+ * time change set records the old block values when the producer writes
+ * them, before anything is flushed to the world; in columnar mode the old
+ * values are captured at flush time into the job's registered capture sink
+ * (see {@link ColumnarUndoRegistry}) immediately BEFORE the chunk write,
+ * and the first-capture-per-slot rule of the log keeps mid-job re-flushes
+ * of a section from overwriting the original old values.
  *
  * @author KAMKEEL
  */
@@ -143,8 +148,13 @@ public final class JobBufferRegistry {
          * @param weWorld the WorldEdit world (classic replay)
          * @param aweWorld the AWE world (direct chunk writes)
          * @param chunk the pending chunk (already detached from its buffer)
+         * @param captureSink the job's registered undo capture sink; the
+         * old value of every pending slot must be captured into it BEFORE
+         * the chunk is written. Null when the job records undo through the
+         * object change set (or not at all) - then no capture happens.
          */
-        void flush(World weWorld, IWorld aweWorld, PendingChunk chunk);
+        void flush(World weWorld, IWorld aweWorld, PendingChunk chunk,
+                ICaptureSink captureSink);
     }
 
     /**
@@ -153,8 +163,10 @@ public final class JobBufferRegistry {
      */
     private static final IFlushSink PRODUCTION_SINK = new IFlushSink() {
         @Override
-        public void flush(World weWorld, IWorld aweWorld, PendingChunk chunk) {
-            ChunkBatchWriter.getInstance().flushJobChunk(weWorld, aweWorld, chunk);
+        public void flush(World weWorld, IWorld aweWorld, PendingChunk chunk,
+                ICaptureSink captureSink) {
+            ChunkBatchWriter.getInstance().flushJobChunk(weWorld, aweWorld, chunk,
+                    captureSink);
         }
     };
 
@@ -727,6 +739,7 @@ public final class JobBufferRegistry {
 
         final UUID uuid = buf.getPlayer() == null ? null : buf.getPlayer().getUUID();
         if (m_buffers.remove(new Key(uuid, buf.getJobId()), buf)) {
+            ColumnarUndoRegistry.unregister(uuid, buf.getJobId());
             logJobDone(buf);
         }
     }
@@ -745,13 +758,19 @@ public final class JobBufferRegistry {
     }
 
     /**
-     * Flush one detached chunk and update the job counters + shared budget
+     * Flush one detached chunk and update the job counters + shared budget.
+     * The job's registered undo capture sink (columnar mode) rides along so
+     * the sink captures the pre-write old values; an unregistered job
+     * (changeset mode, undo off, loose writes, undo replays) flushes with a
+     * null sink at zero capture cost.
      */
     private void flushChunk(JobBuffer buf, PendingChunk chunk, IFlushSink sink) {
         final int count = chunk.getCount();
         final int sections = chunk.getSectionCount();
+        final UUID uuid = buf.getPlayer() == null ? null : buf.getPlayer().getUUID();
+        final ICaptureSink captureSink = ColumnarUndoRegistry.get(uuid, buf.getJobId());
         try {
-            sink.flush(buf.getWorld(), buf.getBukkitWorld(), chunk);
+            sink.flush(buf.getWorld(), buf.getBukkitWorld(), chunk, captureSink);
         } catch (Throwable ex) {
             log("Error while flushing buffered chunk " + chunk.getX()
                     + "," + chunk.getZ() + ": " + ex);
@@ -812,6 +831,10 @@ public final class JobBufferRegistry {
         }
         final UUID uuid = buf.getPlayer() == null ? null : buf.getPlayer().getUUID();
         if (m_buffers.remove(new Key(uuid, buf.getJobId()), buf)) {
+            //The job is done and fully drained: no further flush can need
+            //its capture sink. The columnar log itself stays attached to
+            //the session's composite change set for the undo replay.
+            ColumnarUndoRegistry.unregister(uuid, buf.getJobId());
             logJobDone(buf);
         }
     }
