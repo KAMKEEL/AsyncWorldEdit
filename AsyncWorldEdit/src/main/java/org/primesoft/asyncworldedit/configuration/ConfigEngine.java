@@ -67,6 +67,11 @@ public class ConfigEngine {
     public static final boolean DEFAULT_COLUMNAR_UNDO = true;
 
     /**
+     * Default for the operation fast lane
+     */
+    public static final boolean DEFAULT_FAST_LANE = true;
+
+    /**
      * Default for the region streamed flushing toggle
      */
     public static final boolean DEFAULT_STREAM_ENABLED = true;
@@ -88,6 +93,8 @@ public class ConfigEngine {
     private final boolean m_columnarUndo;
 
     private final boolean m_debug;
+
+    private final boolean m_fastLane;
 
     private final boolean m_streamEnabled;
 
@@ -135,6 +142,15 @@ public class ConfigEngine {
     }
 
     /**
+     * The operation fast lane: eligible cuboid operations compile to
+     * section fills instead of per block streams. Master kill switch -
+     * false restores per block production everywhere.
+     */
+    public boolean isFastLane() {
+        return m_fastLane;
+    }
+
+    /**
      * Region streamed flushing: flush ready chunks of still-producing jobs
      * during production instead of only at job end
      */
@@ -163,6 +179,7 @@ public class ConfigEngine {
             m_undoSpoolThresholdMb = DEFAULT_UNDO_SPOOL_THRESHOLD_MB;
             m_columnarUndo = DEFAULT_COLUMNAR_UNDO;
             m_debug = false;
+            m_fastLane = DEFAULT_FAST_LANE;
             m_streamEnabled = DEFAULT_STREAM_ENABLED;
             m_streamWindowSections = DEFAULT_STREAM_WINDOW_SECTIONS;
             m_streamStaleRuns = DEFAULT_STREAM_STALE_RUNS;
@@ -174,6 +191,7 @@ public class ConfigEngine {
                 engineSection.getInt("undo-spool-threshold-mb", DEFAULT_UNDO_SPOOL_THRESHOLD_MB));
         m_columnarUndo = parseUndoMode(engineSection.getString("undo-mode", "columnar"));
         m_debug = engineSection.getBoolean("debug", false);
+        m_fastLane = engineSection.getBoolean("fast-lane", DEFAULT_FAST_LANE);
         m_streamEnabled = engineSection.getBoolean("stream.enabled", DEFAULT_STREAM_ENABLED);
         m_streamWindowSections = Math.max(1,
                 engineSection.getInt("stream.window-sections", DEFAULT_STREAM_WINDOW_SECTIONS));

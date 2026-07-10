@@ -249,12 +249,17 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
   block jobs stream through the 1024-section budget), off-main-thread
   API callers skip the fast lane (probe touches Bukkit state).
   ChunkBatchWriter.isDirectAvailable() added. Suite: 213 green.
-- [ ] Wave 1: //walls + //faces decomposition (makeCuboidWalls/
-  makeCuboidFaces overloads decompose to up to 6 cuboid boxes and
-  reuse trySetBlocksFast-style compilation; NOTE the existing
-  makeWalls/makeFaces(Pattern) overrides at AsyncEditSession L269-324
-  already async-wrap - the fast path must intercept before those
-  submit their per-block task) + tests
+- [x] Wave 1: //walls + //faces + awe.engine.fast-lane master switch:
+  tryFillFast generalized over FILL_SOLID/FILL_WALLS/FILL_FACES box
+  decompositions (overlapping edges are safe: fillBox counts only
+  newly used slots, so written stays exact); walls/faces refuse
+  regions poking out of the world (clamping would shift their slices
+  onto interior blocks); the per block fallback reruns the MATCHING
+  operation. ConfigEngine.isFastLane (fast-lane, default true) gates
+  the whole lane; bundled + Desktop configs documented. NOTE the
+  makeWalls/makeFaces(Pattern) NON-cuboid overrides at AsyncEditSession
+  L269-324 still per-block async-wrap - intentional (non-cuboid
+  regions are out of fast lane scope). Suite: 213 green.
 - [ ] Wave 1: independent adversarial review of the whole lane (the
   self-review above caught budget exhaustion + off-main probing;
   a second pass should attack: cancel during backpressure wait,

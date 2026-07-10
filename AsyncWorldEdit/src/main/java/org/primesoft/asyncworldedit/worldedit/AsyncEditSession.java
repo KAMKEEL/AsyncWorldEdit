@@ -977,22 +977,44 @@ public class AsyncEditSession extends ThreadSafeEditSession {
 
     @Override
     public int makeCuboidFaces(Region region, BaseBlock block) throws MaxChangedBlocksException {
-        return super.makeCuboidFaces(region, block); //To change body of generated methods, choose Tools | Templates.
+        final int fast = tryFillFast(region, block, FILL_FACES);
+        if (fast >= 0) {
+            return fast;
+        }
+        return super.makeCuboidFaces(region, block);
     }
 
     @Override
     public int makeCuboidFaces(Region region, Pattern pattern) throws MaxChangedBlocksException {
-        return super.makeCuboidFaces(region, pattern); //To change body of generated methods, choose Tools | Templates.
+        if (pattern instanceof SingleBlockPattern) {
+            final int fast = tryFillFast(region,
+                    ((SingleBlockPattern) pattern).getBlock(), FILL_FACES);
+            if (fast >= 0) {
+                return fast;
+            }
+        }
+        return super.makeCuboidFaces(region, pattern);
     }
 
     @Override
     public int makeCuboidWalls(Region region, BaseBlock block) throws MaxChangedBlocksException {
-        return super.makeCuboidWalls(region, block); //To change body of generated methods, choose Tools | Templates.
+        final int fast = tryFillFast(region, block, FILL_WALLS);
+        if (fast >= 0) {
+            return fast;
+        }
+        return super.makeCuboidWalls(region, block);
     }
 
     @Override
     public int makeCuboidWalls(Region region, Pattern pattern) throws MaxChangedBlocksException {
-        return super.makeCuboidWalls(region, pattern); //To change body of generated methods, choose Tools | Templates.
+        if (pattern instanceof SingleBlockPattern) {
+            final int fast = tryFillFast(region,
+                    ((SingleBlockPattern) pattern).getBlock(), FILL_WALLS);
+            if (fast >= 0) {
+                return fast;
+            }
+        }
+        return super.makeCuboidWalls(region, pattern);
     }
 
     @Override
@@ -1052,7 +1074,7 @@ public class AsyncEditSession extends ThreadSafeEditSession {
 
     @Override
     public int setBlocks(Region region, BaseBlock block) throws MaxChangedBlocksException {
-        final int fast = trySetBlocksFast(region, block);
+        final int fast = tryFillFast(region, block, FILL_SOLID);
         if (fast >= 0) {
             return fast;
         }
@@ -1062,8 +1084,8 @@ public class AsyncEditSession extends ThreadSafeEditSession {
     @Override
     public int setBlocks(Region region, Pattern pattern) throws MaxChangedBlocksException {
         if (pattern instanceof SingleBlockPattern) {
-            final int fast = trySetBlocksFast(region,
-                    ((SingleBlockPattern) pattern).getBlock());
+            final int fast = tryFillFast(region,
+                    ((SingleBlockPattern) pattern).getBlock(), FILL_SOLID);
             if (fast >= 0) {
                 return fast;
             }
@@ -1072,17 +1094,30 @@ public class AsyncEditSession extends ThreadSafeEditSession {
     }
 
     /**
-     * The fast lane: compile an eligible cuboid //set straight into the
-     * job's chunk section buffers (bulk array fills - no per block
-     * pipeline). Eligibility is a strict whitelist; ANY miss returns -1
-     * and the caller runs the unchanged per block path. See
+     * Fast lane operation kinds: a solid cuboid fill (//set), the four
+     * vertical walls (//walls) or all six faces (//faces)
+     */
+    private static final int FILL_SOLID = 0;
+    private static final int FILL_WALLS = 1;
+    private static final int FILL_FACES = 2;
+
+    /**
+     * The fast lane: compile an eligible cuboid //set, //walls or //faces
+     * straight into the job's chunk section buffers (bulk array fills -
+     * no per block pipeline). Eligibility is a strict whitelist; ANY miss
+     * returns -1 and the caller runs the unchanged per block path. See
      * docs/section-engine-plan.md.
      *
      * @return the async-queued sentinel (0) when the fast lane took the
      * operation, -1 when the caller must fall through to the per block
      * path
      */
-    private int trySetBlocksFast(final Region region, final BaseBlock block) {
+    private int tryFillFast(final Region region, final BaseBlock block,
+            final int opKind) {
+        final ConfigEngine engineCfg = ConfigProvider.engine();
+        if (engineCfg == null || !engineCfg.isFastLane()) {
+            return -1;
+        }
         if (!(region instanceof CuboidRegion)
                 || !ConfigProvider.isBufferedEngine()
                 || getMask() != null
@@ -1102,6 +1137,13 @@ public class AsyncEditSession extends ThreadSafeEditSession {
         final int minY = Math.max(0, min.getBlockY());
         final int maxY = Math.min(255, max.getBlockY());
         if (minY > maxY || !BatchEligibility.isBatchable(block, minY)) {
+            return -1;
+        }
+        //Walls/faces geometry is defined by the ORIGINAL region bounds; a
+        //region poking out of the world would shift its floor/ceiling and
+        //wall slices onto interior blocks - not eligible
+        if (opKind != FILL_SOLID
+                && (min.getBlockY() < 0 || max.getBlockY() > 255)) {
             return -1;
         }
 
@@ -1124,13 +1166,29 @@ public class AsyncEditSession extends ThreadSafeEditSession {
             return -1;
         }
 
-        if (!checkAsync(WorldeditOperations.setBlocks)) {
+        final WorldeditOperations weOp;
+        final String jobName;
+        switch (opKind) {
+            case FILL_WALLS:
+                weOp = WorldeditOperations.makeCuboidWalls;
+                jobName = "makeCuboidWalls";
+                break;
+            case FILL_FACES:
+                weOp = WorldeditOperations.makeCuboidFaces;
+                jobName = "makeCuboidFaces";
+                break;
+            default:
+                weOp = WorldeditOperations.setBlocks;
+                jobName = "setBlocks";
+                break;
+        }
+        if (!checkAsync(weOp)) {
             return -1;
         }
 
         final int jobId = getJobId();
         final CancelabeEditSession session = new CancelabeEditSession(this, getMask(), jobId);
-        final JobEntry job = new JobEntry(m_player, session, jobId, "setBlocks");
+        final JobEntry job = new JobEntry(m_player, session, jobId, jobName);
         m_blockPlacer.addJob(m_player, job);
 
         final com.sk89q.worldedit.world.World world = getWorld();
@@ -1147,8 +1205,51 @@ public class AsyncEditSession extends ThreadSafeEditSession {
         final int maxX = max.getBlockX();
         final int maxZ = max.getBlockZ();
 
+        //The operation as world-space boxes. Overlapping edges are safe:
+        //fillBox only counts newly used slots, so the written total stays
+        //exact and last-write-wins is a no-op for one constant value.
+        final int[][] boxes;
+        switch (opKind) {
+            case FILL_WALLS:
+                boxes = new int[][]{
+                    {minX, minY, minZ, maxX, maxY, minZ},
+                    {minX, minY, maxZ, maxX, maxY, maxZ},
+                    {minX, minY, minZ, minX, maxY, maxZ},
+                    {maxX, minY, minZ, maxX, maxY, maxZ}};
+                break;
+            case FILL_FACES:
+                boxes = new int[][]{
+                    {minX, minY, minZ, maxX, maxY, minZ},
+                    {minX, minY, maxZ, maxX, maxY, maxZ},
+                    {minX, minY, minZ, minX, maxY, maxZ},
+                    {maxX, minY, minZ, maxX, maxY, maxZ},
+                    {minX, minY, minZ, maxX, minY, maxZ},
+                    {minX, maxY, minZ, maxX, maxY, maxZ}};
+                break;
+            default:
+                boxes = new int[][]{{minX, minY, minZ, maxX, maxY, maxZ}};
+                break;
+        }
+
         SchedulerUtils.runTaskAsynchronously(m_schedule, new AsyncTask(session, m_player,
-                "setBlocks", m_blockPlacer, job) {
+                jobName, m_blockPlacer, job) {
+
+            /**
+             * The unchanged per block rerun of the whole operation
+             * (columnar log creation failure / drain stall)
+             */
+            private int perBlock(CancelabeEditSession session)
+                    throws MaxChangedBlocksException {
+                switch (opKind) {
+                    case FILL_WALLS:
+                        return session.makeCuboidWalls(region, block);
+                    case FILL_FACES:
+                        return session.makeCuboidFaces(region, block);
+                    default:
+                        return session.setBlocks(region, block);
+                }
+            }
+
             @Override
             public int task(final CancelabeEditSession session)
                     throws MaxChangedBlocksException {
@@ -1157,13 +1258,16 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                 if (needLog && !changeSetExtent.ensureJobLog(uuid, jobId)) {
                     //No columnar log (creation failed): keep undo correct
                     //through the per block lane
-                    return session.setBlocks(region, block);
+                    return perBlock(session);
                 }
 
                 final JobBufferRegistry registry = JobBufferRegistry.getInstance();
                 final long[] written = {0};
-                final boolean complete = CuboidSplitter.forEachChunkBox(
-                        minX, minY, minZ, maxX, maxY, maxZ,
+                boolean complete = true;
+                for (int b = 0; complete && b < boxes.length; b++) {
+                    final int[] box = boxes[b];
+                    complete = CuboidSplitter.forEachChunkBox(
+                        box[0], box[1], box[2], box[3], box[4], box[5],
                         new CuboidSplitter.IChunkBoxVisitor() {
                             @Override
                             public boolean visit(int cx, int cz, int x0, int y0,
@@ -1203,6 +1307,7 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                                 }
                             }
                         });
+                }
 
                 if (!complete) {
                     if (session.isCanceled()) {
@@ -1210,10 +1315,10 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                         //buffers of a canceled job
                         return (int) written[0];
                     }
-                    //Budget wall mid-compile: nothing half-fast may flush.
+                    //Drain stall mid-compile: nothing half-fast may flush.
                     //Discard and rerun the WHOLE operation per block.
                     registry.discardJob(uuid, jobId);
-                    return session.setBlocks(region, block);
+                    return perBlock(session);
                 }
                 return (int) Math.min(Integer.MAX_VALUE, written[0]);
             }
