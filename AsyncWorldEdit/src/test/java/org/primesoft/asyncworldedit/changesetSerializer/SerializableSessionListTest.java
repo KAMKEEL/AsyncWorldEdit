@@ -281,6 +281,27 @@ public class SerializableSessionListTest {
     }
 
     @Test
+    public void setReleasesTheReplacedSessionAndKeepsTheElement() throws Exception {
+        //set(index, element) used to release the old session and then
+        //re-assign the OLD session instead of the element - since
+        //releaseSession deletes the columnar spools, the replaced
+        //session's release must hit exactly the old one
+        final SerializableSessionList list = new SerializableSessionList();
+        final FakeSession replaced = sessionWithSpool();
+        final FakeSession element = sessionWithSpool();
+        list.add(replaced);
+
+        final EditSession previous = list.set(0, element);
+
+        assertSame(replaced, previous);
+        assertSame(element, list.get(0));
+        assertFalse("the replaced session's spool must die", spoolOf(0).exists());
+        assertTrue("the incoming session's spool must survive",
+                spoolOf(1).exists());
+        assertTrue(ColumnarSpoolRegistry.isLive(spoolOf(1)));
+    }
+
+    @Test
     public void clearReleasesEverySession() throws Exception {
         //The AsyncSessionManager.cleanupSession path (logout, session
         //manager clear)

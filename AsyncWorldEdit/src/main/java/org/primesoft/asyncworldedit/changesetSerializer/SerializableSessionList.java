@@ -319,8 +319,12 @@ public class SerializableSessionList extends LinkedList<EditSession> {
     public EditSession set(int index, EditSession element) {
         EditSession old = get(index);
 
+        //Release the REPLACED session and assign the incoming one (this
+        //used to re-assign the just-released old session, leaking the
+        //element's resources and resurrecting the old one - fatal since
+        //releaseSession deletes the columnar undo spool files)
         releaseSession(old);
-        assignSession(old);
+        assignSession(element);
 
         return super.set(index, element);
     }
