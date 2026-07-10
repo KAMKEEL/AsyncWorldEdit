@@ -220,6 +220,22 @@ public class PendingChunkConditionalTest {
     }
 
     @Test
+    public void clearConditionalsDropsOnlyTheConditionalSlots() {
+        PendingChunk chunk = new PendingChunk(0, 0);
+        chunk.fillBox(0, 0, 0, 1, 0, 1, 3, 0, false, 1);
+        chunk.fillBoxConditional(4, 16, 4, 5, 16, 5, 9, 0, false, 2, 5, 0);
+        assertEquals(8, chunk.getCount());
+
+        assertEquals(4, chunk.clearConditionals());
+
+        assertFalse(chunk.hasConditional());
+        assertEquals(4, chunk.getCount());
+        //Plain slots untouched, conditional slots gone
+        assertEquals(3, SectionMath.slotId(chunk.getPendingSlot(0, 0, 0)));
+        assertEquals(SectionMath.EMPTY_SLOT, chunk.getPendingSlot(4, 16, 4));
+    }
+
+    @Test
     public void resolvedChunkReplaysOnlyTheMatches() {
         PendingChunk chunk = new PendingChunk(0, 0);
         chunk.fillBoxConditional(0, 0, 0, 1, 0, 1, 9, 0, false, 4, 5, 0);

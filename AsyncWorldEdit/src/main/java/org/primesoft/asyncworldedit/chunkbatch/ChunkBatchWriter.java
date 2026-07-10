@@ -855,7 +855,20 @@ public class ChunkBatchWriter {
         //tile invalidation of the direct write only fires where a write
         //really happens.
         if (chunk.hasConditional()) {
-            resolveConditionals(parent, bukkitWorld, chunk);
+            try {
+                resolveConditionals(parent, bukkitWorld, chunk);
+            } catch (Throwable ex) {
+                if (!m_captureErrorLogged) {
+                    m_captureErrorLogged = true;
+                    log("Error while resolving conditional blocks of buffered chunk "
+                            + chunk.getX() + "," + chunk.getZ() + ": " + ex);
+                }
+            }
+            //Belt and braces: an unresolved conditional slot must NEVER be
+            //written blindly - drop whatever a failed resolution left over
+            if (chunk.hasConditional()) {
+                chunk.clearConditionals();
+            }
         }
 
         if (captureSink != null) {

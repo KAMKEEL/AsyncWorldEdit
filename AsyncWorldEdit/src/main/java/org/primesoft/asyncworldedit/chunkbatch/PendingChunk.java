@@ -387,6 +387,33 @@ public final class PendingChunk {
     }
 
     /**
+     * Drop every remaining conditional slot without writing it. Safety
+     * net of the flush path: when {@link #resolveConditionals} could not
+     * run to completion (it never throws by design, but the flush must
+     * not trust that), the unresolved slots are cleared so the section
+     * apply can never write an unverified conditional value blindly.
+     *
+     * @return number of slots dropped
+     */
+    public int clearConditionals() {
+        int dropped = 0;
+        for (int s = 0; s < SectionMath.SECTIONS_PER_CHUNK; s++) {
+            final PendingSection section = m_sections[s];
+            if (section == null || section.getConditionalCount() == 0) {
+                continue;
+            }
+            for (int index = 0; index < SectionMath.SECTION_SIZE
+                    && section.getConditionalCount() > 0; index++) {
+                if (section.isConditional(index) && section.clear(index)) {
+                    m_count--;
+                    dropped++;
+                }
+            }
+        }
+        return dropped;
+    }
+
+    /**
      * Number of NEW section buffers a fill spanning [y0..y1] would
      * allocate. The registry acquires exactly this many shared budget
      * slots before calling {@link #fillBox}.
