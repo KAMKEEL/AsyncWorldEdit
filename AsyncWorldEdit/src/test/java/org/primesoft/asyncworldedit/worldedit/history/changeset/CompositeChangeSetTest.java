@@ -424,4 +424,177 @@ public class CompositeChangeSetTest {
         assertFalse(m_composite.forwardIterator().hasNext());
         assertEquals(0, m_composite.size());
     }
+
+    /**
+     * Recording run consumer: "bx,by,bz:start+len:oldId:oldData&gt;
+     * newId:newData", refuses the first refuseFirst offers
+     */
+    private static final class RecordingRunConsumer
+            implements IColumnarRunSource.IRunConsumer {
+
+        final List<String> runs = new ArrayList<String>();
+        int refuseFirst;
+
+        @Override
+        public boolean run(int bx, int by, int bz, int startSlot, int len,
+                int oldId, int oldData, int newId, int newData) {
+            if (refuseFirst > 0) {
+                refuseFirst--;
+                return false;
+            }
+            runs.add(bx + "," + by + "," + bz + ":" + startSlot + "+" + len
+                    + ":" + oldId + ":" + oldData + ">" + newId + ":" + newData);
+            return true;
+        }
+    }
+
+    /**
+     * Drive an iterator the way the undo/redo processors do: bulk runs
+     * first whenever the source offers them, per-change otherwise
+     */
+    private static List<String> drainWithRuns(Iterator<Change> it,
+            RecordingRunConsumer consumer, List<String> runsOut) {
+        final IColumnarRunSource source = (IColumnarRunSource) it;
+        final List<String> changes = new ArrayList<String>();
+        for (;;) {
+            if (source.nextRun(consumer)) {
+                continue;
+            }
+            if (!it.hasNext()) {
+                break;
+            }
+            changes.add(describe(it.next()));
+        }
+        runsOut.addAll(consumer.runs);
+        return changes;
+    }
+
+    @Test
+    public void backwardOffersColumnarRunsThenObjectChangesPerChange() throws Exception {
+        buildTwoLogsAndTwoObjectChanges();
+
+        final Iterator<Change> it = m_composite.backwardIterator();
+        assertTrue(it instanceof IColumnarRunSource);
+
+        final List<String> runs = new ArrayList<String>();
+        final List<String> changes = drainWithRuns(it,
+                new RecordingRunConsumer(), runs);
+
+        //Log B first (reverse attach order), then log A's two slot run
+        //as ONE run; object changes stay per-change, backward
+        assertEquals(2, runs.size());
+        assertEquals("16,32,0:5+1:3:1>4:2", runs.get(0));
+        assertEquals("0,0,0:0+2:1:0>2:0", runs.get(1));
+        assertEquals(2, changes.size());
+        assertEquals("101,1,100:50:0>52:2", changes.get(0));
+        assertEquals("100,1,100:50:0>51:1", changes.get(1));
+    }
+
+    @Test
+    public void forwardOffersRunsOnlyAfterTheObjectPhase() throws Exception {
+        buildTwoLogsAndTwoObjectChanges();
+
+        final Iterator<Change> it = m_composite.forwardIterator();
+        final IColumnarRunSource source = (IColumnarRunSource) it;
+        final RecordingRunConsumer consumer = new RecordingRunConsumer();
+
+        //Object phase first: no run may be offered while object changes
+        //remain
+        assertFalse(source.nextRun(consumer));
+        assertTrue(it.hasNext());
+        assertEquals("100,1,100:50:0>51:1", describe(it.next()));
+        assertFalse(source.nextRun(consumer));
+        assertEquals("101,1,100:50:0>52:2", describe(it.next()));
+
+        //Columnar phase: log A first (attach order), then log B
+        assertTrue(source.nextRun(consumer));
+        assertTrue(source.nextRun(consumer));
+        assertFalse(source.nextRun(consumer));
+        assertFalse(it.hasNext());
+
+        assertEquals(2, consumer.runs.size());
+        assertEquals("0,0,0:0+2:1:0>2:0", consumer.runs.get(0));
+        assertEquals("16,32,0:5+1:3:1>4:2", consumer.runs.get(1));
+    }
+
+    @Test
+    public void refusedRunFallsBackPerChangeAndTheRemainderIsOfferedAgain() throws Exception {
+        //One three slot run
+        final ColumnarUndoSink sink = sink(Long.MAX_VALUE);
+        sink.beginSection(0, 0, 0, 0, 10);
+        sink.capture(0, 1, 0, 2, 0);
+        sink.capture(1, 1, 0, 2, 0);
+        sink.capture(2, 1, 0, 2, 0);
+        sink.endSection();
+        m_composite.attach(sink);
+
+        final Iterator<Change> it = m_composite.backwardIterator();
+        final IColumnarRunSource source = (IColumnarRunSource) it;
+        final RecordingRunConsumer consumer = new RecordingRunConsumer();
+        consumer.refuseFirst = 1;
+
+        //Refused: not advanced, the next change comes per-change (backward
+        //emits from the end: slot 2)
+        assertFalse(source.nextRun(consumer));
+        assertEquals("2,0,0:1:0>2:0", describe(it.next()));
+
+        //The remainder (slots 0..1, a prefix in backward mode) is offered
+        //as one run
+        assertTrue(source.nextRun(consumer));
+        assertEquals(1, consumer.runs.size());
+        assertEquals("0,0,0:0+2:1:0>2:0", consumer.runs.get(0));
+        assertFalse(source.nextRun(consumer));
+        assertFalse(it.hasNext());
+    }
+
+    @Test
+    public void lookaheadMaterializedChangeBlocksTheRunUntilEmitted() throws Exception {
+        final ColumnarUndoSink sink = sink(Long.MAX_VALUE);
+        sink.beginSection(0, 0, 0, 0, 10);
+        sink.capture(0, 1, 0, 2, 0);
+        sink.capture(1, 1, 0, 2, 0);
+        sink.endSection();
+        m_composite.attach(sink);
+
+        final Iterator<Change> it = m_composite.backwardIterator();
+        final IColumnarRunSource source = (IColumnarRunSource) it;
+        final RecordingRunConsumer consumer = new RecordingRunConsumer();
+
+        //hasNext() materializes one change; the source must refuse runs
+        //until it is emitted, then offer the remainder
+        assertTrue(it.hasNext());
+        assertFalse(source.nextRun(consumer));
+        assertEquals("1,0,0:1:0>2:0", describe(it.next()));
+        assertTrue(source.nextRun(consumer));
+        assertEquals("0,0,0:0+1:1:0>2:0", consumer.runs.get(0));
+    }
+
+    @Test
+    public void backwardRunsSkipRedoOnlySegmentsForwardIncludesThem() throws Exception {
+        //Cross-flush rewrite: slot 7 captured 1>20, re-flushed 20>30
+        //(redo-only segment)
+        final ColumnarUndoSink sink = sink(Long.MAX_VALUE);
+        sink.beginSection(0, 0, 0, 0, 10);
+        sink.capture(7, 1, 0, 20, 0);
+        sink.endSection();
+        sink.beginSection(0, 0, 0, 11, 20);
+        sink.capture(7, 20, 0, 30, 0);
+        sink.endSection();
+        m_composite.attach(sink);
+
+        final List<String> backRuns = new ArrayList<String>();
+        assertTrue(drainWithRuns(m_composite.backwardIterator(),
+                new RecordingRunConsumer(), backRuns).isEmpty());
+        assertEquals(1, backRuns.size());
+        assertEquals("0,0,0:7+1:1:0>20:0", backRuns.get(0));
+
+        final List<String> fwdRuns = new ArrayList<String>();
+        assertTrue(drainWithRuns(m_composite.forwardIterator(),
+                new RecordingRunConsumer(), fwdRuns).isEmpty());
+        assertEquals(2, fwdRuns.size());
+        assertEquals("0,0,0:7+1:1:0>20:0", fwdRuns.get(0));
+        //The redo-only rewrite lands AFTER the first capture (append
+        //order): the last flushed value wins on redo
+        assertEquals("0,0,0:7+1:20:0>30:0", fwdRuns.get(1));
+    }
 }

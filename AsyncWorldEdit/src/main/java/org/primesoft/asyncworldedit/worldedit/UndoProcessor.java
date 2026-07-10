@@ -72,6 +72,7 @@ import org.primesoft.asyncworldedit.api.worldedit.IThreadSafeEditSession;
 import org.primesoft.asyncworldedit.utils.InjectionException;
 import org.primesoft.asyncworldedit.utils.Reflection;
 import org.primesoft.asyncworldedit.worldedit.history.ExtendedUndoContext;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.IColumnarRunSource;
 
 /**
  *
@@ -89,30 +90,39 @@ public class UndoProcessor implements Operation {
 
         try {
             Operations.completeBlindly(new UndoProcessor(
-                    sender, session, changes));
+                    sender, session, changes,
+                    ColumnarRunReplay.bulkConsumer(parent, session, false)));
 
         } finally {
             session.flushQueue();
-            session.setMask(oldMask);            
+            session.setMask(oldMask);
         }
     }
 
     private final EditSession m_sender;
     private final EditSession m_session;
     private final Iterator<Change> m_changes;
-    
+
+    /**
+     * Bulk consumer of columnar runs (fast lane), null when the replay
+     * must run per change
+     */
+    private final IColumnarRunSource.IRunConsumer m_bulkConsumer;
+
     private UndoProcessor(EditSession sender, EditSession session,
-            Iterator<Change> changes) {
-        
+            Iterator<Change> changes,
+            IColumnarRunSource.IRunConsumer bulkConsumer) {
+
         m_sender = sender;
         m_session = session;
         m_changes = changes;
+        m_bulkConsumer = bulkConsumer;
     }
 
     @Override
     public Operation resume(RunContext rc) throws WorldEditException {
         UndoContext uc = new ExtendedUndoContext(m_sender);
-        
+
         Extent bypassHistory = Reflection.get(EditSession.class, Extent.class, m_session, "bypassHistory",
                 "Unable to get history");
 
@@ -121,17 +131,30 @@ public class UndoProcessor implements Operation {
         }
         uc.setExtent(bypassHistory);
 
-        for (; m_changes.hasNext();) {
+        final IColumnarRunSource runSource
+                = m_bulkConsumer != null && m_changes instanceof IColumnarRunSource
+                        ? (IColumnarRunSource) m_changes : null;
+
+        for (;;) {
+            //Fast lane: consume whole columnar runs as bulk buffer fills;
+            //anything the run source cannot or will not offer run-wise
+            //(object changes, refused runs) replays per change below
+            if (runSource != null && runSource.nextRun(m_bulkConsumer)) {
+                continue;
+            }
+            if (!m_changes.hasNext()) {
+                break;
+            }
             Change change = m_changes.next();
             if (change != null) {
                 change.undo(uc);
-            }            
+            }
         }
 
         if (m_changes instanceof IDisposable) {
             ((IDisposable)m_changes).dispose();
         }
-        
+
         return null;
     }
 

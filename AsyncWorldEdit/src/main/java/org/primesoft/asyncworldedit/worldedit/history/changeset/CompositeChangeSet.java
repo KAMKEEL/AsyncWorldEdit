@@ -208,7 +208,8 @@ public class CompositeChangeSet implements ChangeSet {
      * fully forward. Unreadable segments are skipped (logged once).
      */
     private final class CompositeIterator implements Iterator<Change>,
-            ThreadSafeChangeSet.IThreadSafeIterator, IDisposable {
+            ThreadSafeChangeSet.IThreadSafeIterator, IDisposable,
+            IColumnarRunSource {
 
         private final boolean m_backward;
 
@@ -292,6 +293,76 @@ public class CompositeChangeSet implements ChangeSet {
             //leaves the history.
             if (m_objectIterator instanceof IDisposable) {
                 ((IDisposable) m_objectIterator).dispose();
+            }
+        }
+
+        /**
+         * Offer the next pending change as a whole columnar run (see
+         * {@link IColumnarRunSource}). Emission-order equivalence with
+         * the per-change iteration: within a run every slot carries the
+         * SAME (old, new) values, and runs/segments/logs are advanced by
+         * exactly the same cursor logic as {@link #fetchColumnar}, so
+         * consuming a run wholesale is indistinguishable from iterating
+         * its slots - the fill's write sequence replaces the per-slot
+         * order, which only matters across DIFFERENT values (first
+         * capture per slot keeps a slot out of every later non-redo-only
+         * segment, so equal-position ordering within one log never
+         * arises; across logs and against object changes the caller's
+         * phase order is preserved because this method never crosses a
+         * phase boundary).
+         */
+        @Override
+        public boolean nextRun(IRunConsumer consumer) {
+            if (m_next != null) {
+                //A hasNext() lookahead already materialized a change; it
+                //must be emitted through next() first
+                return false;
+            }
+
+            if (!m_backward) {
+                //Forward: the object phase replays first, per change
+                if (m_objectIterator == null) {
+                    m_objectIterator = m_objectChangeSet.forwardIterator();
+                }
+                if (m_objectIterator != null && m_objectIterator.hasNext()) {
+                    return false;
+                }
+            }
+
+            for (;;) {
+                if (m_runs != null && m_runIdx >= 0 && m_runIdx < m_runCount) {
+                    final int len = ColumnarUndoLog.runLength(m_runs, m_runIdx);
+                    if (m_slotK < len) {
+                        //Offer the REMAINDER of the current run as one
+                        //interval: backward emits slots from the end, so
+                        //the remainder is the prefix; forward the suffix
+                        final int start = ColumnarUndoLog.runStartSlot(m_runs, m_runIdx)
+                                + (m_backward ? 0 : m_slotK);
+                        if (!consumer.run(m_bx, m_by, m_bz,
+                                start, len - m_slotK,
+                                ColumnarUndoLog.runOldId(m_runs, m_runIdx),
+                                ColumnarUndoLog.runOldData(m_runs, m_runIdx),
+                                ColumnarUndoLog.runNewId(m_runs, m_runIdx),
+                                ColumnarUndoLog.runNewData(m_runs, m_runIdx))) {
+                            return false;
+                        }
+                        m_slotK = len;
+                        return true;
+                    }
+                    //Run done: advance exactly like fetchColumnar
+                    m_runIdx += m_backward ? -1 : 1;
+                    m_slotK = 0;
+                    continue;
+                }
+
+                if (m_logIdx >= m_logs.size()) {
+                    return false;
+                }
+
+                if (!advanceSegment()) {
+                    m_logIdx++;
+                    m_segIdx = -1;
+                }
             }
         }
 

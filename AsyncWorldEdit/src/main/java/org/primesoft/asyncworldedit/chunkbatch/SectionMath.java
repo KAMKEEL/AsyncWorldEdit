@@ -197,6 +197,73 @@ public final class SectionMath {
     }
 
     /**
+     * Visitor for {@link #intervalToBoxes}: one axis-aligned box of section
+     * local coordinates (0..15 on every axis)
+     */
+    public interface IIntervalBoxVisitor {
+
+        /**
+         * @return true to continue the decomposition, false to abort
+         */
+        boolean box(int x0, int y0, int z0, int x1, int y1, int z1);
+    }
+
+    /**
+     * Decompose a contiguous section slot interval [startSlot,
+     * startSlot + len) into axis-aligned boxes of section local
+     * coordinates. The section index layout (y &lt;&lt; 8 | z &lt;&lt; 4 |
+     * x) makes any interval a leading partial x row, whole z rows up to a
+     * plane boundary, whole y planes and a trailing remainder - at most a
+     * handful of boxes per interval. Used by the undo replay to lower a
+     * columnar RLE run (an interval + one constant value) into bulk buffer
+     * fills.
+     *
+     * @param startSlot first slot of the interval (0..4095)
+     * @param len interval length (startSlot + len &lt;= 4096)
+     * @param visitor receives the boxes in ascending slot order
+     * @return true when the whole interval was visited, false when the
+     * visitor aborted
+     */
+    public static boolean intervalToBoxes(int startSlot, int len,
+            IIntervalBoxVisitor visitor) {
+        int s = startSlot;
+        int remaining = len;
+
+        while (remaining > 0) {
+            final int x = s & 0xF;
+            final int z = (s >> 4) & 0xF;
+            final int y = (s >> 8) & 0xF;
+
+            if (x != 0 || remaining < 16) {
+                //Partial x row
+                final int n = Math.min(16 - x, remaining);
+                if (!visitor.box(x, y, z, x + n - 1, y, z)) {
+                    return false;
+                }
+                s += n;
+                remaining -= n;
+            } else if (z != 0 || remaining < 256) {
+                //Whole x rows within one y plane
+                final int rows = Math.min(16 - z, remaining / 16);
+                if (!visitor.box(0, y, z, 15, y, z + rows - 1)) {
+                    return false;
+                }
+                s += rows * 16;
+                remaining -= rows * 16;
+            } else {
+                //Whole y planes
+                final int planes = Math.min(16 - y, remaining / 256);
+                if (!visitor.box(0, y, 0, 15, y + planes - 1, 15)) {
+                    return false;
+                }
+                s += planes * 256;
+                remaining -= planes * 256;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Encode a pending block into a slot value. Bit 0 is the notify flag,
      * bits 1..4 the metadata, bits 5 and up the block id. The result is
      * always &gt;= 0 so {@link #EMPTY_SLOT} can mark unused slots.

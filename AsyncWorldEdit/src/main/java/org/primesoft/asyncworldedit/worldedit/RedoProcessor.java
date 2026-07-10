@@ -64,6 +64,7 @@ import org.primesoft.asyncworldedit.api.worldedit.IThreadSafeEditSession;
 import org.primesoft.asyncworldedit.utils.InjectionException;
 import org.primesoft.asyncworldedit.utils.Reflection;
 import org.primesoft.asyncworldedit.worldedit.history.ExtendedUndoContext;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.IColumnarRunSource;
 
 /**
  *
@@ -81,7 +82,8 @@ public class RedoProcessor implements Operation {
 
         try {
             Operations.completeBlindly(new RedoProcessor(
-                    sender, session, changes));
+                    sender, session, changes,
+                    ColumnarRunReplay.bulkConsumer(parent, session, true)));
 
         } finally {
             session.flushQueue();
@@ -93,11 +95,19 @@ public class RedoProcessor implements Operation {
     private final EditSession m_session;
     private final Iterator<Change> m_changes;
 
+    /**
+     * Bulk consumer of columnar runs (fast lane), null when the replay
+     * must run per change
+     */
+    private final IColumnarRunSource.IRunConsumer m_bulkConsumer;
+
     private RedoProcessor(EditSession sender, EditSession session,
-            Iterator<Change> changes) {
+            Iterator<Change> changes,
+            IColumnarRunSource.IRunConsumer bulkConsumer) {
         m_sender = sender;
         m_session = session;
         m_changes = changes;
+        m_bulkConsumer = bulkConsumer;
     }
 
     @Override
@@ -112,7 +122,21 @@ public class RedoProcessor implements Operation {
         }
         uc.setExtent(bypassHistory);
 
-        for (; m_changes.hasNext();) {
+        final IColumnarRunSource runSource
+                = m_bulkConsumer != null && m_changes instanceof IColumnarRunSource
+                        ? (IColumnarRunSource) m_changes : null;
+
+        for (;;) {
+            //Fast lane: whole columnar runs become bulk buffer fills of
+            //the NEW values (the forward run source only offers runs
+            //after the object phase and includes redo-only segments in
+            //append order - the last flushed value wins)
+            if (runSource != null && runSource.nextRun(m_bulkConsumer)) {
+                continue;
+            }
+            if (!m_changes.hasNext()) {
+                break;
+            }
             Change change = m_changes.next();
             if (change != null) {
                 change.redo(uc);
