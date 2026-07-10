@@ -213,18 +213,65 @@ AsyncWorldEdit-Deploy\target\AsyncWorldEdit.jar -> copy over
 C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
 (never touch -kawe.jar). Suite was 191 green at plan time.
 
-- [ ] Wave 0: E1 call-path finding: (RECORD HERE)
-- [ ] Wave 0: E2 undo-registration finding: (RECORD HERE)
-- [ ] Wave 0: S1 PendingSection.fillBox + tests
-- [ ] Wave 0: S2 JobBufferRegistry.fillChunkBox + tests
-- [ ] Wave 1: compiler + //set seam + eligibility + tests
-- [ ] Wave 1: //walls + //faces decomposition + tests
-- [ ] Wave 1: adversarial self-review + fixes
+- [x] Wave 0: E1 call-path finding (2026-07-10): //set reaches
+  AsyncEditSession.setBlocks(Region, BaseBlock|Pattern) ON THE MAIN
+  THREAD at command time (WE 6.1.2 RegionCommands calls the session
+  directly; the async wrapping happens DOWNSTREAM via the base
+  EditSession's visitor -> Operations.completeLegacy -> the injected
+  AsyncOperationProcessor, which remaps the op onto a fresh
+  CancelabeEditSession). Interception before super() is therefore
+  single-fire: the fast lane never calls super, and
+  CancelabeEditSession does NOT override setBlocks (verified), so the
+  per-block fallback `session.setBlocks(...)` inside the async task
+  runs plain base-EditSession per-block logic - no recursion. The
+  AsyncEditSession overrides existed as pass-throughs at L1041-1050.
+- [x] Wave 0: E2 undo-registration finding (2026-07-10): the columnar
+  log registration lives in ExtendedChangeSetExtent.registerJobLog
+  (private, first-suppression). Exposed as public ensureJobLog(uuid,
+  jobId) (resolveOwned-then-register, owner-bound); ThreadSafeEditSession
+  now keeps the extent in m_changeSetExtent (null when undo disabled)
+  with getChangeSetExtent(). The fast lane MUST call ensureJobLog
+  BEFORE its first fillChunkBox so JobBufferRegistry.getOrCreate binds
+  the capture sink at buffer creation. Undo-off detection:
+  getChangeSetExtent()==null || getRootChangeSet() instanceof
+  NullChangeSet.
+- [x] Wave 0: S1+S2 substrate (commit 07addb6): PendingChunk.fillBox +
+  newSectionsInYRange, CuboidSplitter, JobBufferRegistry.fillChunkBox
+  (all-or-nothing per-box budget acquisition; one global write seq per
+  box) + discardJob. Tests: PendingChunkFillBoxTest,
+  CuboidSplitterTest, JobBufferFillTest.
+- [x] Wave 1: //set seam (commit 3a3436c) + self-review fixes (commit
+  c07f81a): AsyncEditSession.trySetBlocksFast - strict whitelist
+  eligibility, job mirrors the makeFaces dispatch pattern, columnar
+  log registered before compile, budget refusal = BACKPRESSURE (wait
+  for the drain, 60s stall abort -> discard + per-block rerun; window
+  eviction guarantees drain progress above 256 held sections, so >4M
+  block jobs stream through the 1024-section budget), off-main-thread
+  API callers skip the fast lane (probe touches Bukkit state).
+  ChunkBatchWriter.isDirectAvailable() added. Suite: 213 green.
+- [ ] Wave 1: //walls + //faces decomposition (makeCuboidWalls/
+  makeCuboidFaces overloads decompose to up to 6 cuboid boxes and
+  reuse trySetBlocksFast-style compilation; NOTE the existing
+  makeWalls/makeFaces(Pattern) overrides at AsyncEditSession L269-324
+  already async-wrap - the fast path must intercept before those
+  submit their per-block task) + tests
+- [ ] Wave 1: independent adversarial review of the whole lane (the
+  self-review above caught budget exhaustion + off-main probing;
+  a second pass should attack: cancel during backpressure wait,
+  fill-then-classic-write clearPending interplay, undo of a
+  backpressured multi-wave job, session logout mid-compile)
 - [ ] Wave 2: conditional fills + //replace + tests
 - [ ] Wave 3: clipboard solids + tests
 - [ ] Wave 4: section-level undo replay + tests
-- [ ] Wave 5: telemetry/config/docs/benchmark rows + final package
+- [ ] Wave 5: telemetry (lane= tag), awe.engine.fast-lane master
+  switch (NOT yet implemented - the lane is currently always-on when
+  eligible; add the config gate in this wave), config comments,
+  engine-architecture.md update, benchmark rows, final package
 - In-game validation: ONE consolidated session at the end (per Kamron:
   no midway gates): the benchmark runbook rows + fast-lane rows + undo
-  spot-checks. Fallback lever if anything misbehaves in production:
-  awe.engine.fast-lane: false.
+  spot-checks. Until awe.engine.fast-lane ships, the fallback levers
+  are engine.mode: classic or any eligibility condition (e.g. a
+  session mask) - and //undo always has undo-mode: changeset.
+
+Suite count when this log was last updated: 213 green (mvn clean
+package also green; Desktop jar refreshed at commit c07f81a).
