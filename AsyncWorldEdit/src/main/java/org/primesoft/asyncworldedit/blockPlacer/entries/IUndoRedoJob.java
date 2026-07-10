@@ -6,14 +6,14 @@
  * All rights reserved.
  *
  * Redistribution in source, use in source and binary forms, with or without
- * modification, are permitted free of charge provided that the following 
+ * modification, are permitted free of charge provided that the following
  * conditions are met:
  *
  * 1.  Redistributions of source code must retain the above copyright notice, this
  *     list of conditions and the following disclaimer.
  * 2.  Redistributions of source code, with or without modification, in any form
  *     other then free of charge is not allowed,
- * 3.  Redistributions of source code, with tools and/or scripts used to build the 
+ * 3.  Redistributions of source code, with tools and/or scripts used to build the
  *     software is not allowed,
  * 4.  Redistributions of source code, with information on how to compile the software
  *     is not allowed,
@@ -48,23 +48,18 @@
 
 package org.primesoft.asyncworldedit.blockPlacer.entries;
 
-import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
-import org.primesoft.asyncworldedit.worldedit.CancelabeEditSession;
+import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 
 /**
- * Specialor job entry for redo jobs.
- * @author SBPrime
+ * Marker for history replay jobs (undo/redo). Their classic queue entries
+ * carry the loose job id -1: the replayed blocks come out of the changeset
+ * UNWRAPPED (a stored BlockChange holds plain BaseBlocks, and the world
+ * write path extracts the job id from the block wrapper only), so the
+ * per job block counter cannot resolve the owning job by id and falls back
+ * to the player's oldest live job carrying this marker instead (see
+ * BlockPlacer.resolveLooseEntryOwner).
+ *
+ * @author KAMKEEL
  */
-public class RedoJob extends JobEntry implements IUndoRedoJob {
-
-    /**
-     *
-     * @param player
-     * @param cEditSession
-     * @param jobId
-     * @param name
-     */
-    public RedoJob(IPlayerEntry player, CancelabeEditSession cEditSession, int jobId, String name) {
-        super(player, cEditSession, jobId, name);
-    }
+public interface IUndoRedoJob extends IJobEntry {
 }

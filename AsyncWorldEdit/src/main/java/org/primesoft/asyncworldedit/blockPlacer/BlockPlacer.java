@@ -50,6 +50,7 @@ package org.primesoft.asyncworldedit.blockPlacer;
 import org.primesoft.asyncworldedit.api.blockPlacer.IBlockPlacer;
 import org.primesoft.asyncworldedit.api.blockPlacer.IBlockPlacerListener;
 import com.sk89q.worldedit.MaxChangedBlocksException;
+import org.primesoft.asyncworldedit.blockPlacer.entries.IUndoRedoJob;
 import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
 import org.primesoft.asyncworldedit.blockPlacer.entries.UndoJob;
 import org.primesoft.asyncworldedit.configuration.ConfigProvider;
@@ -726,6 +727,14 @@ public class BlockPlacer implements IBlockPlacer {
                                     && !ConfigProvider.isBufferedEngine()
                                     && !(entry instanceof IJobEntry)) {
                                 IJobEntry owner = playerEntry.getJob(entry.getJobId());
+                                if (owner == null) {
+                                    //Classic undo/redo replay entries carry
+                                    //the loose job id -1 (the changeset's
+                                    //blocks are unwrapped), so the direct
+                                    //lookup misses - attribute them to the
+                                    //player's oldest live undo/redo job
+                                    owner = resolveLooseEntryOwner(playerEntry.getJobs());
+                                }
                                 if (owner instanceof JobEntry) {
                                     ((JobEntry) owner).addBlocksPlaced(1);
                                 }
@@ -764,6 +773,38 @@ public class BlockPlacer implements IBlockPlacer {
         }
 
         permissionGroup.updateProgress(keyPos, resultPlayer);
+        return result;
+    }
+
+    /**
+     * Attribute a classic queue entry whose job id resolves to no live job
+     * to the player's oldest live undo/redo job. Classic undo/redo replays
+     * the changeset's stored BlockChange objects, whose old/new blocks are
+     * plain (unwrapped) BaseBlocks - the world write path extracts the job
+     * id from the block wrapper only, so the queued entries carry the loose
+     * job id -1 even though they are exactly the blocks the UndoJob/RedoJob
+     * completion line should report. The queue drains FIFO and every job's
+     * marker entry is queued behind its blocks, so when several history jobs
+     * overlap the oldest live one (smallest id - ids are handed out
+     * increasing among concurrently live jobs) owns the draining entries.
+     * Plain jobs are never returned: a stray loose write of a normal edit
+     * stays unattributed exactly as before. Pure selection logic (no placer
+     * state), unit tested; only ever called with engine debug on, so the
+     * getJobs() array copy costs nothing in normal operation.
+     *
+     * @param jobs the player's live jobs
+     * @return the oldest live undo/redo job, or null when there is none
+     */
+    static IJobEntry resolveLooseEntryOwner(IJobEntry[] jobs) {
+        IJobEntry result = null;
+        for (IJobEntry job : jobs) {
+            if (!(job instanceof IUndoRedoJob)) {
+                continue;
+            }
+            if (result == null || job.getJobId() < result.getJobId()) {
+                result = job;
+            }
+        }
         return result;
     }
 

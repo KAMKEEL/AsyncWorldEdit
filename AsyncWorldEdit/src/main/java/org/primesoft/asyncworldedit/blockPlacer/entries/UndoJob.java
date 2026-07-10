@@ -55,7 +55,7 @@ import org.primesoft.asyncworldedit.worldedit.CancelabeEditSession;
  * Specialor job entry for undo jobs.
  * @author SBPrime
  */
-public class UndoJob extends JobEntry {
+public class UndoJob extends JobEntry implements IUndoRedoJob {
 
     /**
      *
