@@ -372,15 +372,49 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
   14 interval shapes), CompositeChangeSetTest +5 (backward/forward run
   phases, refusal remainder, lookahead block, redo-only segments
   run-wise). Suite: 237 green.
-- [ ] Wave 5: telemetry (lane= tag), awe.engine.fast-lane master
-  switch (NOT yet implemented - the lane is currently always-on when
-  eligible; add the config gate in this wave), config comments,
-  engine-architecture.md update, benchmark rows, final package
+- [x] Wave 5: polish (commit abe9940). [ENGINE] buffered completion
+  line now carries lane=fast|blocks|mixed (JobBuffer flags set by the
+  registry's fill vs per block write paths; mixed = both, e.g. a fast
+  job whose refused boxes reran per block or an undo replay mixing
+  runs and object changes); EngineStatsTest exact values updated.
+  /awe engine prints "[ENGINE] fast-lane=available|unavailable
+  (switch=on|off direct-write=ok|unavailable)". Docs: fast lane
+  section in engine-architecture.md (eligibility table, degradation
+  rows, lane tag, /awe engine), fast-lane benchmark rows E/E0/F/F0/G/H
+  in the prime-engine-plan.md runbook, bundled AND Desktop config.yml
+  fast-lane comments extended (//replace, undo/redo run lowering, the
+  replace count caveat). NOTE the awe.engine.fast-lane master switch
+  itself already shipped in wave 1 (commit 54f0a31) - the earlier
+  "NOT yet implemented" note in this entry was stale.
+- [x] Waves 1-4 adversarial self-review pass (2026-07-10): walked the
+  wave 1 open items - cancel during backpressure wait (checked every
+  retry iteration -> discard on cancel, OK), fill-then-classic
+  clearPending interplay (clearBuffered scans all buffers incl. fill
+  buffers and clears conditional slots, OK), undo of a backpressured
+  multi-wave job (first-capture bitsets persist in the log across
+  waves, OK), session logout mid-compile (job cancel -> discardBuffer;
+  a producer racing the discard retries into a fresh chunk that the
+  next drain discards; a sealed sink refuses late captures loudly -
+  all existing Phase 3 machinery, OK). Wave 4 specifics: the loose
+  buffer's multi-producer exposure (undo fills + destroy-first double
+  writes) predates this work and is covered by the chunk-lock +
+  putIfAbsent retry contracts; nextRun in backward mode provably does
+  not create the object iterator early (pinned by the pre-existing
+  laziness test). ONE finding, fixed with a regression test (commit
+  c24f42a): the flush trusted resolveConditionals to complete -
+  hardened so a failed/partial resolution can never let apply write an
+  unverified conditional value (drop-over-write, the engine's standing
+  failure preference).
 - In-game validation: ONE consolidated session at the end (per Kamron:
-  no midway gates): the benchmark runbook rows + fast-lane rows + undo
-  spot-checks. Until awe.engine.fast-lane ships, the fallback levers
-  are engine.mode: classic or any eligibility condition (e.g. a
-  session mask) - and //undo always has undo-mode: changeset.
+  no midway gates): the benchmark runbook rows + fast-lane rows
+  (E/E0/F/F0/G/H, see prime-engine-plan.md) + undo spot-checks. The
+  fallback levers are awe.engine.fast-lane: false (per block
+  production everywhere), engine.mode: classic, and undo-mode:
+  changeset.
 
-Suite count when this log was last updated: 237 green (Desktop jar
-last refreshed at commit c07f81a; refresh again at wave 5 final).
+PROJECT STATE: waves 0-5 complete (wave 3 deliberately skipped with
+findings above); suite 239 green; mvn clean package green; Desktop jar
+(AsyncWorldEdit-3.5.4-open-kawe2.jar) refreshed at commit c24f42a.
+Remaining: the in-game validation session (Kamron) per the runbook.
+
+Suite count when this log was last updated: 239 green.
