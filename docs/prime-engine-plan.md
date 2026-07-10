@@ -436,6 +436,7 @@ flat.
 | First-capture across window evictions | per-job per-section bitsets, exact-value tests |
 | NEID/vanilla/compact layout drift | name-first probe + sanity checks extended to the read path |
 | Undo file lifecycle (the keepUndoFileFor trap) | job-close cleanup + startup sweep + integrity fallback |
+| Same-position cross-source rewrites in ONE job (Phase 3 residual, adversarial review finding) | a position written buffered-then-classic (or the flushed variant) inside one operation sits in both undo sources with conflicting order needs; real WE ops write each position once, so accepted + documented - undo-mode: changeset is the exact-fidelity escape hatch; future fix = sequence-stamped object changes |
 | Agent/session interruptions | this plan doc + incremental commits let any session resume |
 
 ## Sequencing and gates
