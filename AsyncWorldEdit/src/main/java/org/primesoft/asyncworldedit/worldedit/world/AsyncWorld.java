@@ -72,6 +72,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.primesoft.asyncworldedit.core.AwePlatform;
@@ -95,6 +96,8 @@ import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.chunkbatch.BatchEligibility;
 import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
 import org.primesoft.asyncworldedit.utils.MutexProvider;
 import org.primesoft.asyncworldedit.worldedit.AsyncEditSession;
 import org.primesoft.asyncworldedit.worldedit.CancelabeEditSession;
@@ -376,9 +379,44 @@ public class AsyncWorld extends AbstractWorldWrapper {
         }
 
         final IJobEntry job = m_blockPlacer.getJob(player, jobId);
-        return JobBufferRegistry.getInstance().buffer(player, jobId, m_parent,
-                m_bukkitWorld, job, v.getBlockX(), v.getBlockY(), v.getBlockZ(),
+        final boolean buffered = JobBufferRegistry.getInstance().buffer(player, jobId,
+                m_parent, m_bukkitWorld, job, v.getBlockX(), v.getBlockY(), v.getBlockZ(),
                 newBlock.getType(), newBlock.getData(), notify);
+
+        if (!buffered) {
+            recordRefusedBufferUndo(player, jobId, v, newBlock);
+        }
+        return buffered;
+    }
+
+    /**
+     * Compensating undo record for a buffer-refused write of a columnar
+     * undo job (section budget full - the caller falls back to the classic
+     * queue): the extent suppressed the object recording expecting a
+     * flush-time capture, but the buffer never saw the block, so without
+     * this record its undo would be lost. The capture sink routes the
+     * change into the session's thread safe object change set, which is
+     * safe from this producer thread and keeps the record ordered before
+     * any later write of the job. No registered sink means the extent
+     * recorded the write as usual - nothing to do here.
+     */
+    private void recordRefusedBufferUndo(IPlayerEntry player, int jobId,
+            Vector v, BaseBlock newBlock) {
+        if (jobId < 0) {
+            return;
+        }
+        final UUID uuid = player == null ? null : player.getUUID();
+        final ICaptureSink sink = ColumnarUndoRegistry.get(uuid, jobId);
+        if (sink == null) {
+            return;
+        }
+
+        final BaseBlock oldBlock = ChunkBatchWriter.getInstance()
+                .getBlock(m_parent, m_bukkitWorld, v);
+        //No write sequence exists - the buffer refused the block
+        sink.captureCleared(v.getBlockX(), v.getBlockY(), v.getBlockZ(),
+                oldBlock.getType(), oldBlock.getData(),
+                newBlock.getType(), newBlock.getData(), -1);
     }
 
     @Override

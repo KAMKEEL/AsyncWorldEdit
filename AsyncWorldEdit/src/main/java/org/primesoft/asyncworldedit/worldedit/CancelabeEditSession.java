@@ -88,6 +88,7 @@ import org.primesoft.asyncworldedit.utils.SessionCanceled;
 import org.primesoft.asyncworldedit.worldedit.entity.BaseEntityWrapper;
 import org.primesoft.asyncworldedit.worldedit.extent.ExtendedChangeSetExtent;
 import org.primesoft.asyncworldedit.worldedit.extent.inventory.FixedBlockBagExtent;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.CompositeChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.FileChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.IExtendedChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.NullChangeSet;
@@ -125,6 +126,10 @@ public class CancelabeEditSession extends AweEditSession implements ICancelabeEd
         m_cWorld = (CancelableWorld) getWorld();
 
         ChangeSet tmp = m_parent.getRootChangeSet();
+        if (tmp instanceof CompositeChangeSet) {
+            //Columnar mode: the file change set lives inside the composite
+            tmp = ((CompositeChangeSet) tmp).getObjectChangeSet();
+        }
         if (tmp instanceof FileChangeSet) {
             ((FileChangeSet) tmp).setCancelable(this);
         }
@@ -210,7 +215,13 @@ public class CancelabeEditSession extends AweEditSession implements ICancelabeEd
         } else  if (changeSet instanceof IExtendedChangeSet) {
             IExtendedChangeSet aweChangeSet = (IExtendedChangeSet) changeSet;
 
-            ExtendedChangeSetExtent extendedChangeSetExtent = new ExtendedChangeSetExtent(this, afterExtent, aweChangeSet);
+            //Columnar mode: this clone's extent must attach its job's
+            //columnar log to the same session composite as the parent
+            final ChangeSet parentRoot = m_parent.getRootChangeSet();
+            final CompositeChangeSet composite = parentRoot instanceof CompositeChangeSet
+                    ? (CompositeChangeSet) parentRoot : null;
+
+            ExtendedChangeSetExtent extendedChangeSetExtent = new ExtendedChangeSetExtent(this, afterExtent, aweChangeSet, composite);
             ExtentUtils.setExtent(beforeExtent, extendedChangeSetExtent);
         } else {
             log(String.format("Expected changeSet: IExtendedChangeSet but got %1$s, undo broken.",

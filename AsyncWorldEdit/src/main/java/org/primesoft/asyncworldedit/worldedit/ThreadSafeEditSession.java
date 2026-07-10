@@ -102,6 +102,7 @@ import org.primesoft.asyncworldedit.worldedit.entity.BaseEntityWrapper;
 import org.primesoft.asyncworldedit.worldedit.extent.ExtendedChangeSetExtent;
 import org.primesoft.asyncworldedit.worldedit.extent.inventory.FixedBlockBagExtent;
 import org.primesoft.asyncworldedit.worldedit.extent.inventory.ThreadSafeBlockBag;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.CompositeChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.FileChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.IExtendedChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.MemoryMonitorChangeSet;
@@ -340,13 +341,29 @@ public class ThreadSafeEditSession extends AweEditSession implements IThreadSafe
                 changeSet = new FileChangeSet(core, playerEntry);
             }
 
-            IExtendedChangeSet aweChangeSet = new MemoryMonitorChangeSet(playerEntry, m_dispatcher, new ThreadSafeChangeSet(changeSet));
+            //Columnar undo mode: the session root becomes a composite of
+            //the object change set (tiles/NBT/classic-path changes, exactly
+            //as before) and the per job columnar undo logs attached by the
+            //extent below. In changeset mode the chain is exactly the
+            //previous one. Gated on "requested" (not "active") so a session
+            //never changes its changeset shape when the engine is forced
+            //to classic at runtime.
+            ChangeSet root = changeSet;
+            CompositeChangeSet composite = null;
+            if (ConfigProvider.isBufferedEngineRequested()
+                    && ConfigProvider.engine() != null
+                    && ConfigProvider.engine().isColumnarUndo()) {
+                composite = new CompositeChangeSet(changeSet);
+                root = composite;
+            }
 
-            ExtendedChangeSetExtent extendedChangeSetExtent = new ExtendedChangeSetExtent(null, afterExtent, aweChangeSet);
+            IExtendedChangeSet aweChangeSet = new MemoryMonitorChangeSet(playerEntry, m_dispatcher, new ThreadSafeChangeSet(root));
+
+            ExtendedChangeSetExtent extendedChangeSetExtent = new ExtendedChangeSetExtent(null, afterExtent, aweChangeSet, composite);
             ExtentUtils.setExtent(beforeExtent, extendedChangeSetExtent);
 
             newChangeSet = aweChangeSet;
-            m_rootChangeSet = changeSet;
+            m_rootChangeSet = root;
         }
 
         Reflection.set(EditSession.class, this, "changeSet", newChangeSet,

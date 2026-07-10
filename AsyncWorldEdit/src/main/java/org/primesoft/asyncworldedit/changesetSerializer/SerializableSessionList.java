@@ -56,6 +56,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import org.primesoft.asyncworldedit.api.worldedit.IThreadSafeEditSession;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.CompositeChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.FileChangeSet;
 
 /**
@@ -79,7 +80,11 @@ public class SerializableSessionList extends LinkedList<EditSession> {
             return;
         }
 
-        final ChangeSet tmpChangeSet = tsSession.getRootChangeSet();
+        ChangeSet tmpChangeSet = tsSession.getRootChangeSet();
+        if (tmpChangeSet instanceof CompositeChangeSet) {
+            //Columnar mode: the file change set lives inside the composite
+            tmpChangeSet = ((CompositeChangeSet) tmpChangeSet).getObjectChangeSet();
+        }
         final FileChangeSet fileChangeSet = tmpChangeSet instanceof FileChangeSet ? (FileChangeSet) tmpChangeSet : null;
 
         if (fileChangeSet == null) {
@@ -103,7 +108,14 @@ public class SerializableSessionList extends LinkedList<EditSession> {
 
     private void releaseSession(EditSession session) {
         final IThreadSafeEditSession tsSession = (session instanceof IThreadSafeEditSession) ? (IThreadSafeEditSession) session : null;
-        final ChangeSet tmpChangeSet = tsSession != null ? tsSession.getRootChangeSet() : null;
+        ChangeSet tmpChangeSet = tsSession != null ? tsSession.getRootChangeSet() : null;
+        if (tmpChangeSet instanceof CompositeChangeSet) {
+            //The session leaves the history: no undo or redo can reference
+            //it anymore, so the columnar spool files die here (close also
+            //sweeps any leftover capture registry entries)
+            ((CompositeChangeSet) tmpChangeSet).close();
+            tmpChangeSet = ((CompositeChangeSet) tmpChangeSet).getObjectChangeSet();
+        }
         final FileChangeSet fileChangeSet = tmpChangeSet instanceof FileChangeSet ? (FileChangeSet) tmpChangeSet : null;
 
         if (fileChangeSet != null) {

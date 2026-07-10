@@ -59,9 +59,22 @@ import com.sk89q.worldedit.history.change.BlockChange;
 import com.sk89q.worldedit.history.change.EntityCreate;
 import com.sk89q.worldedit.util.Location;
 import com.sk89q.worldedit.world.biome.BaseBiome;
+import java.io.File;
+import java.io.IOException;
+import java.util.UUID;
 import javax.annotation.Nullable;
+import static org.primesoft.asyncworldedit.LoggerProvider.log;
+import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.api.worldedit.ICancelabeEditSession;
+import org.primesoft.asyncworldedit.chunkbatch.BatchEligibility;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoLog;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
+import org.primesoft.asyncworldedit.configuration.ConfigEngine;
+import org.primesoft.asyncworldedit.configuration.ConfigProvider;
+import org.primesoft.asyncworldedit.worldedit.IAsyncWrapper;
 import org.primesoft.asyncworldedit.worldedit.history.change.BiomeChange;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.ColumnarUndoSink;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.CompositeChangeSet;
 import org.primesoft.asyncworldedit.worldedit.history.changeset.IExtendedChangeSet;
 
 /**
@@ -74,11 +87,30 @@ public class ExtendedChangeSetExtent extends ChangeSetExtent {
     private final IExtendedChangeSet m_changeSet;
     private final ICancelabeEditSession m_cancelableEditSession;
 
+    /**
+     * The session's composite change set; non null only in columnar undo
+     * mode (buffered engine requested + undo enabled), which arms the
+     * suppression seam in {@link #setBlock}
+     */
+    private final CompositeChangeSet m_composite;
+
+    /**
+     * Columnar log creation failed once (logged); further jobs of this
+     * session record through the object change set
+     */
+    private boolean m_registerErrorLogged;
+
     public ExtendedChangeSetExtent(ICancelabeEditSession editSession, Extent extent, IExtendedChangeSet changeSet) {
+        this(editSession, extent, changeSet, null);
+    }
+
+    public ExtendedChangeSetExtent(ICancelabeEditSession editSession, Extent extent,
+            IExtendedChangeSet changeSet, CompositeChangeSet composite) {
         super(extent, new ProxyChangeSet(changeSet, editSession));
 
         m_changeSet = changeSet;
         m_cancelableEditSession = editSession;
+        m_composite = composite;
     }
 
     @Override
@@ -96,9 +128,114 @@ public class ExtendedChangeSetExtent extends ChangeSetExtent {
 
     @Override
     public boolean setBlock(Vector location, BaseBlock block) throws WorldEditException {
+        //Columnar undo: a buffer-eligible block of a real async job skips
+        //the dispatched old-block read and the per block object recording
+        //entirely - its old value is captured at flush time into the job's
+        //columnar log, registered here on first suppression. INVARIANT:
+        ///undo and //redo replays write through bypassHistory, never reach
+        //this extent, never register a log, so the flush-time capture
+        //ignores their writes and a replay can never corrupt its own
+        //history.
+        if (suppressToColumnar(location, block)) {
+            return super.setBlock(location, block);
+        }
+
         BaseBlock previous = getBlock(location);
         m_changeSet.addExtended(new BlockChange(location.toBlockVector(), previous, block), m_cancelableEditSession);
         return super.setBlock(location, block);
+    }
+
+    /**
+     * True when this write's undo is captured columnar at flush time
+     * instead of being recorded here: the buffered engine and the columnar
+     * mode are active, the block matches the exact buffer eligibility
+     * predicate of AsyncWorld.bufferBlock and the write belongs to a real
+     * async job (extracted from the IAsyncWrapper the session wrapped
+     * around the location/block). Everything else - loose writes,
+     * synchronous writes, tiles/NBT, wildcard data - records exactly as
+     * before.
+     */
+    private boolean suppressToColumnar(Vector location, BaseBlock block) {
+        if (m_composite == null || !ConfigProvider.isBufferedEngine()) {
+            return false;
+        }
+        final ConfigEngine engine = ConfigProvider.engine();
+        if (engine == null || !engine.isColumnarUndo()) {
+            return false;
+        }
+
+        final IAsyncWrapper wrapper;
+        if (location instanceof IAsyncWrapper) {
+            wrapper = (IAsyncWrapper) location;
+        } else if (block instanceof IAsyncWrapper) {
+            wrapper = (IAsyncWrapper) block;
+        } else {
+            //No wrapper (e.g. a plugin writing to the extent directly):
+            //record as today
+            return false;
+        }
+
+        if (!wrapper.isAsync() || wrapper.getJobId() < 0) {
+            //Synchronous or loose writes may take the classic world path
+            //that the flush never captures: record as today
+            return false;
+        }
+
+        if (!BatchEligibility.isBatchable(block, location.getBlockY())) {
+            //Tiles/NBT/wildcards keep the full fidelity object record
+            return false;
+        }
+
+        final IPlayerEntry player = wrapper.getPlayer();
+        final UUID uuid = player == null ? null : player.getUUID();
+        final int jobId = wrapper.getJobId();
+
+        if (ColumnarUndoRegistry.get(uuid, jobId) != null) {
+            return true;
+        }
+        return registerJobLog(uuid, jobId);
+    }
+
+    /**
+     * First suppression of a (player, job): create the job's columnar undo
+     * log (spooling to the player's undo folder above the configured
+     * threshold), register its capture sink for the flush and attach it to
+     * the session's composite change set. A creation failure logs once and
+     * falls back to the object recording.
+     */
+    private boolean registerJobLog(UUID uuid, int jobId) {
+        try {
+            final ConfigEngine engine = ConfigProvider.engine();
+            final long thresholdBytes = 1024L * 1024L * (engine != null
+                    ? engine.getUndoSpoolThresholdMb()
+                    : ConfigEngine.DEFAULT_UNDO_SPOOL_THRESHOLD_MB);
+
+            final File folder = new File(ConfigProvider.getUndoFolder(),
+                    uuid != null ? uuid.toString() : "console");
+            if (!folder.exists() && !folder.mkdirs()) {
+                throw new IOException("unable to create " + folder.getPath());
+            }
+            final File spool = new File(folder, String.format("columnar.%1$d.%2$d.bin",
+                    jobId, System.currentTimeMillis()));
+
+            final ColumnarUndoSink sink = new ColumnarUndoSink(
+                    new ColumnarUndoLog(spool, thresholdBytes), m_changeSet);
+            if (!ColumnarUndoRegistry.register(uuid, jobId, sink)) {
+                //Another thread of the same job won the registration race;
+                //nothing was written to this log yet
+                sink.close();
+                return ColumnarUndoRegistry.get(uuid, jobId) != null;
+            }
+            m_composite.attach(sink);
+            return true;
+        } catch (Throwable ex) {
+            if (!m_registerErrorLogged) {
+                m_registerErrorLogged = true;
+                log("Error while creating a columnar undo log, this session"
+                        + " records undo through the object change set: " + ex);
+            }
+            return false;
+        }
     }
 
     @Nullable
