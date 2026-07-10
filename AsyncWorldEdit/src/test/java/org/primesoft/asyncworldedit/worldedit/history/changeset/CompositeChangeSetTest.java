@@ -328,6 +328,57 @@ public class CompositeChangeSetTest {
     }
 
     @Test
+    public void backwardSkipsRedoOnlyRewriteSegmentsForwardReplaysThem() throws Exception {
+        //A cross-flush rewrite (//move overlap over a window eviction):
+        //slot 7 captured 1>20 in flush one, re-flushed as 20>30 later
+        final ColumnarUndoSink sink = sink(Long.MAX_VALUE);
+        sink.beginSection(0, 0, 0, 0, 10);
+        sink.capture(7, 1, 0, 20, 0);
+        sink.endSection();
+        sink.beginSection(0, 0, 0, 11, 20);
+        sink.capture(7, 20, 0, 30, 0);
+        sink.capture(8, 1, 0, 30, 0);
+        sink.endSection();
+        m_composite.attach(sink);
+
+        //Undo: the rewrite segment must NOT restore the intermediate 20
+        final List<String> backward = drain(m_composite.backwardIterator());
+        assertEquals(2, backward.size());
+        assertEquals("8,0,0:1:0>30:0", backward.get(0));
+        assertEquals("7,0,0:1:0>20:0", backward.get(1));
+
+        //Redo: slot 7 ends at the FINAL value 30 (the redo-only rewrite
+        //segment replays after the normal segment)
+        final List<String> forward = drain(m_composite.forwardIterator());
+        assertEquals(3, forward.size());
+        assertEquals("7,0,0:1:0>20:0", forward.get(0));
+        assertEquals("8,0,0:1:0>30:0", forward.get(1));
+        assertEquals("7,0,0:20:0>30:0", forward.get(2));
+    }
+
+    @Test
+    public void backwardSkipsRedoOnlySegmentsFromTheSpoolFile() throws Exception {
+        //Threshold 0: both segments spill; the skip must work against the
+        //spooled segment directory too
+        final ColumnarUndoSink sink = sink(0);
+        sink.beginSection(0, 0, 0, 0, 10);
+        sink.capture(7, 1, 0, 20, 0);
+        sink.endSection();
+        sink.beginSection(0, 0, 0, 11, 20);
+        sink.capture(7, 20, 0, 30, 0);
+        sink.endSection();
+        m_composite.attach(sink);
+
+        final List<String> backward = drain(m_composite.backwardIterator());
+        assertEquals(1, backward.size());
+        assertEquals("7,0,0:1:0>20:0", backward.get(0));
+
+        final List<String> forward = drain(m_composite.forwardIterator());
+        assertEquals(2, forward.size());
+        assertEquals("7,0,0:20:0>30:0", forward.get(1));
+    }
+
+    @Test
     public void sizeIsObjectSizePlusCaptureCounts() throws Exception {
         buildTwoLogsAndTwoObjectChanges();
         assertEquals(5, m_composite.size());

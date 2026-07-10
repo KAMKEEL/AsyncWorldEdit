@@ -174,7 +174,8 @@ public class ColumnarUndoLogTest {
         log.endSection();
 
         assertEquals(2, log.getCaptureCount());
-        assertEquals(2, log.getSegmentCount());
+        //Two normal segments plus the redo-only rewrite segment of slot 7
+        assertEquals(3, log.getSegmentCount());
 
         Recorder recorder = new Recorder();
         log.replayBackward(recorder);
@@ -186,20 +187,166 @@ public class ColumnarUndoLogTest {
     }
 
     @Test
-    public void emptyRecaptureSegmentIsDropped() throws Exception {
+    public void allRecaptureFlushYieldsOnlyARedoSegment() throws Exception {
         ColumnarUndoLog log = log(Long.MAX_VALUE);
 
         log.beginSection(0, 0, 0, 0, 1);
         log.capture(0, 1, 0, 2, 0);
         log.endSection();
 
-        //Every slot of the second flush was already captured: no segment
+        //Every slot of the second flush was already captured: no normal
+        //segment, but the rewrite lands in a redo-only segment so redo
+        //ends at the final value
         log.beginSection(0, 0, 0, 2, 3);
         log.capture(0, 2, 0, 3, 0);
         log.endSection();
 
-        assertEquals(1, log.getSegmentCount());
+        assertEquals(2, log.getSegmentCount());
+        assertFalse(log.isSegmentRedoOnly(0));
+        assertTrue(log.isSegmentRedoOnly(1));
+        //The undo size counts first captures only
         assertEquals(1, log.getCaptureCount());
+    }
+
+    @Test
+    public void crossFlushRewriteRedoEndsAtFinalValueUndoAtOriginal() throws Exception {
+        ColumnarUndoLog log = log(Long.MAX_VALUE);
+
+        //Flush 1: slot 7 captured with the world value 1, job writes 20
+        log.beginSection(0, 0, 0, 0, 10);
+        log.capture(7, 1, 0, 20, 0);
+        log.endSection();
+
+        //The chunk was streamed out and rewritten (//move overlap): the
+        //re-flush reads the job's own 20 as "old" and writes 30; slot 8
+        //is fresh
+        log.beginSection(0, 0, 0, 11, 20);
+        log.capture(7, 20, 0, 30, 0);
+        log.capture(8, 1, 0, 30, 0);
+        log.endSection();
+
+        //Undo: only the first captures, slot 7 restores the ORIGINAL 1
+        Recorder backward = new Recorder();
+        log.replayBackward(backward);
+        assertEquals(2, backward.changes.size());
+        assertEquals("8,0,0:1:0>30:0", backward.changes.get(0));
+        assertEquals("7,0,0:1:0>20:0", backward.changes.get(1));
+
+        //Redo: forward replay ends at the FINAL value for slot 7 (30, via
+        //the redo-only rewrite segment appended after the normal segment)
+        Recorder forward = new Recorder();
+        log.replayForward(forward);
+        assertEquals(3, forward.changes.size());
+        assertEquals("7,0,0:1:0>20:0", forward.changes.get(0));
+        assertEquals("8,0,0:1:0>30:0", forward.changes.get(1));
+        assertEquals("7,0,0:20:0>30:0", forward.changes.get(2));
+    }
+
+    @Test
+    public void crossFlushRewriteSurvivesSpooling() throws Exception {
+        //Threshold 0: every segment (normal and redo-only) spills to disk
+        ColumnarUndoLog log = log(0);
+
+        log.beginSection(0, 0, 0, 0, 10);
+        log.capture(7, 1, 0, 20, 0);
+        log.endSection();
+        log.beginSection(0, 0, 0, 11, 20);
+        log.capture(7, 20, 0, 30, 0);
+        log.capture(8, 1, 0, 30, 0);
+        log.endSection();
+
+        assertTrue(log.isSpooled());
+        assertEquals(0, log.getMemoryBytes());
+
+        Recorder backward = new Recorder();
+        log.replayBackward(backward);
+        assertEquals(2, backward.changes.size());
+        assertEquals("8,0,0:1:0>30:0", backward.changes.get(0));
+        assertEquals("7,0,0:1:0>20:0", backward.changes.get(1));
+
+        Recorder forward = new Recorder();
+        log.replayForward(forward);
+        assertEquals(3, forward.changes.size());
+        assertEquals("7,0,0:20:0>30:0", forward.changes.get(2));
+    }
+
+    @Test
+    public void tripleRewriteRedoReplaysEveryIntermediateInOrder() throws Exception {
+        ColumnarUndoLog log = log(Long.MAX_VALUE);
+
+        log.beginSection(0, 0, 0, 0, 1);
+        log.capture(0, 1, 0, 10, 0);
+        log.endSection();
+        log.beginSection(0, 0, 0, 2, 3);
+        log.capture(0, 10, 0, 11, 0);
+        log.endSection();
+        log.beginSection(0, 0, 0, 4, 5);
+        log.capture(0, 11, 0, 12, 0);
+        log.endSection();
+
+        //Undo: exactly one change, the original old value
+        Recorder backward = new Recorder();
+        log.replayBackward(backward);
+        assertEquals(1, backward.changes.size());
+        assertEquals("0,0,0:1:0>10:0", backward.changes.get(0));
+
+        //Redo: append order, the LAST value wins
+        Recorder forward = new Recorder();
+        log.replayForward(forward);
+        assertEquals(3, forward.changes.size());
+        assertEquals("0,0,0:1:0>10:0", forward.changes.get(0));
+        assertEquals("0,0,0:10:0>11:0", forward.changes.get(1));
+        assertEquals("0,0,0:11:0>12:0", forward.changes.get(2));
+    }
+
+    @Test
+    public void rewriteAndFreshSlotsInterleaveInOneFlushBothOrders() throws Exception {
+        //Interleaving A: the re-captured slot comes BEFORE the fresh slot
+        ColumnarUndoLog logA = log(Long.MAX_VALUE);
+        logA.beginSection(0, 0, 0, 0, 1);
+        logA.capture(3, 1, 0, 20, 0);
+        logA.endSection();
+        logA.beginSection(0, 0, 0, 2, 3);
+        logA.capture(3, 20, 0, 30, 0);  //re-capture (lower slot)
+        logA.capture(9, 1, 0, 30, 0);   //fresh (higher slot)
+        logA.endSection();
+
+        Recorder backwardA = new Recorder();
+        logA.replayBackward(backwardA);
+        assertEquals(2, backwardA.changes.size());
+        assertEquals("9,0,0:1:0>30:0", backwardA.changes.get(0));
+        assertEquals("3,0,0:1:0>20:0", backwardA.changes.get(1));
+
+        Recorder forwardA = new Recorder();
+        logA.replayForward(forwardA);
+        assertEquals(3, forwardA.changes.size());
+        assertEquals("3,0,0:1:0>20:0", forwardA.changes.get(0));
+        assertEquals("9,0,0:1:0>30:0", forwardA.changes.get(1));
+        assertEquals("3,0,0:20:0>30:0", forwardA.changes.get(2));
+        logA.close();
+
+        //Interleaving B: the fresh slot comes BEFORE the re-captured slot
+        ColumnarUndoLog logB = log(Long.MAX_VALUE);
+        logB.beginSection(0, 0, 0, 0, 1);
+        logB.capture(9, 1, 0, 20, 0);
+        logB.endSection();
+        logB.beginSection(0, 0, 0, 2, 3);
+        logB.capture(3, 1, 0, 30, 0);   //fresh (lower slot)
+        logB.capture(9, 20, 0, 30, 0);  //re-capture (higher slot)
+        logB.endSection();
+
+        Recorder backwardB = new Recorder();
+        logB.replayBackward(backwardB);
+        assertEquals(2, backwardB.changes.size());
+        assertEquals("3,0,0:1:0>30:0", backwardB.changes.get(0));
+        assertEquals("9,0,0:1:0>20:0", backwardB.changes.get(1));
+
+        Recorder forwardB = new Recorder();
+        logB.replayForward(forwardB);
+        assertEquals(3, forwardB.changes.size());
+        assertEquals("9,0,0:1:0>20:0", forwardB.changes.get(0));
+        assertEquals("3,0,0:1:0>30:0", forwardB.changes.get(1));
+        assertEquals("9,0,0:20:0>30:0", forwardB.changes.get(2));
     }
 
     @Test

@@ -76,13 +76,23 @@ import org.primesoft.asyncworldedit.chunkbatch.SectionMath;
  * before the job's FIRST write there. A per chunk-section bitset (512
  * bytes, kept for the whole job across window evictions) rejects
  * re-captures when streaming flushes the same section multiple times.</li>
+ * <li>Redo-only rewrite segments: a slot flushed AGAIN after its first
+ * capture (a //move or //stack rewriting an overlap position across a
+ * window eviction) keeps its first-capture old value for undo, but redo
+ * must place the LAST flushed value, not the first. The re-capture is
+ * therefore recorded into a redo-only segment appended after the flush's
+ * normal segment: forward replay emits it (in append order, so the final
+ * rewrite wins), backward replay skips it entirely.</li>
  * <li>Segments are appended in flush order and carry the [firstSeq,
  * lastSeq] write-sequence range of their flush, so a composite change set
  * can merge them with the object change set by global sequence.</li>
- * <li>Replay order: backward = segments in reverse append order, runs in
- * reverse, slots of a run in reverse; forward is the exact mirror. Since a
- * slot is captured at most once, per-slot correctness does not depend on
- * cross-segment order.</li>
+ * <li>Replay order: backward = segments in reverse append order (redo-only
+ * segments skipped), runs in reverse, slots of a run in reverse; forward
+ * is the exact mirror over ALL segments. A slot has exactly one normal
+ * capture, so backward per-slot correctness does not depend on
+ * cross-segment order; forward correctness of a rewritten slot depends
+ * only on its redo-only segments replaying after its normal segment,
+ * which the append order guarantees.</li>
  * </ul>
  *
  * Threading: single writer (the main thread flush), replay after the job
@@ -169,6 +179,12 @@ public final class ColumnarUndoLog {
         final int section;
         final int firstSeq;
         final int lastSeq;
+        /**
+         * True for a redo-only rewrite segment: skipped on backward
+         * (undo) replay, its old columns are the job's own intermediate
+         * values and must never restore
+         */
+        final boolean redoOnly;
         int runCount;
         int captureCount;
         /**
@@ -180,12 +196,14 @@ public final class ColumnarUndoLog {
          */
         long fileOffset = -1;
 
-        Segment(int cx, int cz, int section, int firstSeq, int lastSeq) {
+        Segment(int cx, int cz, int section, int firstSeq, int lastSeq,
+                boolean redoOnly) {
             this.cx = cx;
             this.cz = cz;
             this.section = section;
             this.firstSeq = firstSeq;
             this.lastSeq = lastSeq;
+            this.redoOnly = redoOnly;
         }
     }
 
@@ -240,6 +258,17 @@ public final class ColumnarUndoLog {
     private int m_prevNew;
 
     /**
+     * Redo-only rewrite runs of the open section (re-captures of already
+     * captured slots), allocated lazily - most flushes have none
+     */
+    private int[] m_openRedoRuns;
+    private int m_openRedoRunCount;
+    private int m_openRedoCaptures;
+    private int m_prevRedoSlot;
+    private int m_prevRedoOld;
+    private int m_prevRedoNew;
+
+    /**
      * Closed after {@link #close}; every mutator refuses
      */
     private boolean m_closed;
@@ -271,18 +300,25 @@ public final class ColumnarUndoLog {
             throw new IllegalStateException(m_closed
                     ? "the undo log is closed" : "a section capture is already open");
         }
-        m_open = new Segment(cx, cz, section, firstSeq, lastSeq);
+        m_open = new Segment(cx, cz, section, firstSeq, lastSeq, false);
         m_openRuns = new int[INTS_PER_RUN * 16];
         m_openRunCount = 0;
         m_openCaptures = 0;
+        m_openRedoRuns = null;
+        m_openRedoRunCount = 0;
+        m_openRedoCaptures = 0;
         m_openBits = bitsOf(cx, cz, section);
         m_prevSlot = Integer.MIN_VALUE;
+        m_prevRedoSlot = Integer.MIN_VALUE;
     }
 
     /**
      * Capture one slot of the open section (old value read BEFORE the
-     * write). Silently skipped when the slot was already captured by an
-     * earlier flush of this section (first capture wins).
+     * write). A slot already captured by an earlier flush of this section
+     * keeps its first-capture old value for undo (first capture wins);
+     * the re-capture is recorded into the flush's redo-only rewrite
+     * segment so a forward (redo) replay still ends at the LAST flushed
+     * value.
      *
      * @param slotIndex slot in the section (0..4095), ascending per section
      * @param oldId old block id
@@ -295,17 +331,21 @@ public final class ColumnarUndoLog {
             throw new IllegalStateException("no section capture is open");
         }
 
+        final int oldPacked = (oldId << 16) | (oldData & 0xFFFF);
+        final int newPacked = (newId << 16) | (newData & 0xFFFF);
+
         final int word = slotIndex >> 6;
         final long bit = 1L << (slotIndex & 63);
         if ((m_openBits[word] & bit) != 0) {
             //Already captured by an earlier flush of this section: the
-            //undo target stays the value before the job's FIRST write
+            //undo target stays the value before the job's FIRST write,
+            //but redo needs THIS flush's new value - record a redo-only
+            //rewrite run (its old column is the job's own intermediate
+            //value and is never replayed backward)
+            captureRedoRewrite(slotIndex, oldPacked, newPacked);
             return;
         }
         m_openBits[word] |= bit;
-
-        final int oldPacked = (oldId << 16) | (oldData & 0xFFFF);
-        final int newPacked = (newId << 16) | (newData & 0xFFFF);
 
         if (m_openRunCount > 0 && slotIndex == m_prevSlot + 1
                 && oldPacked == m_prevOld && newPacked == m_prevNew) {
@@ -331,9 +371,43 @@ public final class ColumnarUndoLog {
     }
 
     /**
-     * Close the open section capture. An empty capture (every slot was
-     * already captured) is dropped. Spills closed segments to the spool
-     * file once the in-memory bytes exceed the threshold.
+     * Append a re-captured slot to the open section's redo-only rewrite
+     * runs (same RLE encoding as the normal runs)
+     */
+    private void captureRedoRewrite(int slotIndex, int oldPacked, int newPacked) {
+        if (m_openRedoRuns == null) {
+            m_openRedoRuns = new int[INTS_PER_RUN * 16];
+        }
+
+        if (m_openRedoRunCount > 0 && slotIndex == m_prevRedoSlot + 1
+                && oldPacked == m_prevRedoOld && newPacked == m_prevRedoNew) {
+            m_openRedoRuns[(m_openRedoRunCount - 1) * INTS_PER_RUN]++;
+        } else {
+            if (m_openRedoRunCount * INTS_PER_RUN == m_openRedoRuns.length) {
+                final int[] grown = new int[m_openRedoRuns.length * 2];
+                System.arraycopy(m_openRedoRuns, 0, grown, 0, m_openRedoRuns.length);
+                m_openRedoRuns = grown;
+            }
+            final int base = m_openRedoRunCount * INTS_PER_RUN;
+            m_openRedoRuns[base] = (slotIndex << 16) | 1;
+            m_openRedoRuns[base + 1] = oldPacked;
+            m_openRedoRuns[base + 2] = newPacked;
+            m_openRedoRunCount++;
+        }
+
+        m_prevRedoSlot = slotIndex;
+        m_prevRedoOld = oldPacked;
+        m_prevRedoNew = newPacked;
+        m_openRedoCaptures++;
+    }
+
+    /**
+     * Close the open section capture: append the flush's normal segment
+     * (first captures) and, when slots were re-captured, its redo-only
+     * rewrite segment after it - the append order is what makes the
+     * forward replay end at the last flushed value. An empty capture is
+     * dropped. Spills closed segments to the spool file once the
+     * in-memory bytes exceed the threshold.
      *
      * @throws IOException when the spool file cannot be written
      */
@@ -344,20 +418,30 @@ public final class ColumnarUndoLog {
         final Segment segment = m_open;
         m_open = null;
 
-        if (m_openCaptures == 0) {
-            m_openRuns = null;
-            return;
-        }
+        if (m_openCaptures > 0) {
+            segment.runCount = m_openRunCount;
+            segment.captureCount = m_openCaptures;
+            segment.runs = new int[m_openRunCount * INTS_PER_RUN];
+            System.arraycopy(m_openRuns, 0, segment.runs, 0, segment.runs.length);
 
-        segment.runCount = m_openRunCount;
-        segment.captureCount = m_openCaptures;
-        segment.runs = new int[m_openRunCount * INTS_PER_RUN];
-        System.arraycopy(m_openRuns, 0, segment.runs, 0, segment.runs.length);
+            m_segments.add(segment);
+            m_memoryBytes += segment.runs.length * 4L;
+            m_captureCount += m_openCaptures;
+        }
         m_openRuns = null;
 
-        m_segments.add(segment);
-        m_memoryBytes += segment.runs.length * 4L;
-        m_captureCount += m_openCaptures;
+        if (m_openRedoCaptures > 0) {
+            final Segment redo = new Segment(segment.cx, segment.cz,
+                    segment.section, segment.firstSeq, segment.lastSeq, true);
+            redo.runCount = m_openRedoRunCount;
+            redo.captureCount = m_openRedoCaptures;
+            redo.runs = new int[m_openRedoRunCount * INTS_PER_RUN];
+            System.arraycopy(m_openRedoRuns, 0, redo.runs, 0, redo.runs.length);
+
+            m_segments.add(redo);
+            m_memoryBytes += redo.runs.length * 4L;
+        }
+        m_openRedoRuns = null;
 
         if (m_memoryBytes > m_spoolThresholdBytes) {
             spill();
@@ -411,6 +495,8 @@ public final class ColumnarUndoLog {
     /**
      * Replay every captured change backward (undo order): segments in
      * reverse append order, runs in reverse, slots of a run in reverse.
+     * Redo-only rewrite segments are skipped - their old columns are the
+     * job's own intermediate values, never undo targets.
      *
      * @param visitor the change visitor
      * @throws IOException when a spooled segment cannot be read
@@ -418,6 +504,9 @@ public final class ColumnarUndoLog {
     public void replayBackward(IUndoVisitor visitor) throws IOException {
         for (int i = m_segments.size() - 1; i >= 0; i--) {
             final Segment segment = m_segments.get(i);
+            if (segment.redoOnly) {
+                continue;
+            }
             final int[] runs = loadRuns(segment);
             for (int r = segment.runCount - 1; r >= 0; r--) {
                 emitRun(segment, runs, r, visitor, true);
@@ -426,7 +515,10 @@ public final class ColumnarUndoLog {
     }
 
     /**
-     * Replay every captured change forward (redo order)
+     * Replay every captured change forward (redo order), redo-only
+     * rewrite segments included: they replay after the normal segment of
+     * the same slots, so every rewritten position ends at its LAST
+     * flushed value
      *
      * @param visitor the change visitor
      * @throws IOException when a spooled segment cannot be read
@@ -503,7 +595,8 @@ public final class ColumnarUndoLog {
     }
 
     /**
-     * Number of captured block changes (each slot at most once)
+     * Number of captured block changes = undo size (each slot at most
+     * once; redo-only rewrite entries are not counted)
      */
     public long getCaptureCount() {
         return m_captureCount;
@@ -565,6 +658,14 @@ public final class ColumnarUndoLog {
     }
 
     /**
+     * True for a redo-only rewrite segment: a backward (undo) iteration
+     * must skip it, a forward (redo) iteration replays it in append order
+     */
+    public boolean isSegmentRedoOnly(int index) {
+        return m_segments.get(index).redoOnly;
+    }
+
+    /**
      * Number of encoded runs of a segment
      */
     public int getSegmentRunCount(int index) {
@@ -597,6 +698,7 @@ public final class ColumnarUndoLog {
         m_closed = true;
         m_open = null;
         m_openRuns = null;
+        m_openRedoRuns = null;
         m_segments.clear();
         m_captured.clear();
         m_memoryBytes = 0;

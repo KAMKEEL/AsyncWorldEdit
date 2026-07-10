@@ -350,6 +350,9 @@ public class CompositeChangeSet implements ChangeSet {
 
         /**
          * Load the next segment of the current log (in iteration order).
+         * Backward (undo) iteration skips redo-only rewrite segments:
+         * their old columns are the job's own intermediate values, only
+         * the forward (redo) replay may emit them.
          *
          * @return false when the log has no further segment
          */
@@ -358,15 +361,17 @@ public class CompositeChangeSet implements ChangeSet {
 
             synchronized (undoLog) {
                 final int count = undoLog.getSegmentCount();
-                if (m_segIdx == -1) {
-                    m_segIdx = m_backward ? count - 1 : 0;
-                } else {
-                    m_segIdx += m_backward ? -1 : 1;
-                }
-                if (m_segIdx < 0 || m_segIdx >= count) {
-                    m_runs = null;
-                    return false;
-                }
+                do {
+                    if (m_segIdx == -1) {
+                        m_segIdx = m_backward ? count - 1 : 0;
+                    } else {
+                        m_segIdx += m_backward ? -1 : 1;
+                    }
+                    if (m_segIdx < 0 || m_segIdx >= count) {
+                        m_runs = null;
+                        return false;
+                    }
+                } while (m_backward && undoLog.isSegmentRedoOnly(m_segIdx));
 
                 try {
                     m_runs = undoLog.loadSegmentRuns(m_segIdx);
