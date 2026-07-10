@@ -81,6 +81,7 @@ import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
 import org.primesoft.asyncworldedit.chunkbatch.EngineStats;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.SectionBudget;
 import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
 import org.primesoft.asyncworldedit.configuration.ConfigEngine;
 import org.primesoft.asyncworldedit.configuration.ConfigMemory;
@@ -596,23 +597,28 @@ public class BlockPlacer implements IBlockPlacer {
         }
 
         final JobBufferRegistry registry = JobBufferRegistry.getInstance();
-        if (ConfigProvider.messages().isDebugOn()) {
-            log(String.format("[BP RUN] Blocks: %d\tTime: %d\tDemanding: %s\tTPS: %.1f\tBudget: %dms%s",
-                    blocks, (System.currentTimeMillis() - startTime), demanding ? "Y" : "N",
-                    m_tickBudget.getTpsEstimate(), m_tickBudget.getBudgetNanos() / 1000000,
-                    budgetExceeded ? " (exceeded)" : ""));
-        }
-        //The live toggle (awe engine debug on|off), not the static config
-        //value: the completion lines already honor it, the per run line -
-        //the one showing sections-live vs the stream window - must too
+        //One consolidated per run line on the engine debug channel, gated on
+        //the live toggle (awe engine debug on|off; seeded at config load from
+        //engine.debug OR - backward compat - the old messages.debug flag, see
+        //ConfigProvider.resolveEngine). The run half carries the classic
+        //entry stats the old [BP RUN] line printed (entries processed, wall
+        //time, TPS, budget, classic queue size), the engine half the
+        //buffered drain counters. messages.debug alone keeps driving only
+        //the NON engine chatter (injector, session and undo cleanup logs).
         if (EngineDebug.isEnabled()) {
             log(String.format(
-                    "[ENGINE] jobs=%d buffered-flushed=%d chunks-flushed=%d streamed=%d window-evict=%d chunks-carried=%d sections-live=%d/%d",
+                    "[ENGINE] run: blocks=%d wall=%dms tps=%.1f budget=%dms%s demanding=%s queue=%d"
+                    + " jobs=%d buffered-flushed=%d chunks-flushed=%d streamed=%d"
+                    + " window-evict=%d chunks-carried=%d sections-live=%d/%d",
+                    blocks, System.currentTimeMillis() - startTime,
+                    m_tickBudget.getTpsEstimate(), m_tickBudget.getBudgetNanos() / 1000000,
+                    budgetExceeded ? " (exceeded)" : "", demanding ? "Y" : "N",
+                    getGlobalQueueSize(),
                     registry.getBufferCount(), registry.getLastFlushedBlocks(),
                     registry.getLastFlushedChunks(), registry.getLastStreamedChunks(),
                     registry.getLastWindowEvictions(), registry.getLastCarriedChunks(),
-                    org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getUsed(),
-                    org.primesoft.asyncworldedit.chunkbatch.SectionBudget.getShared().getMaxSections()));
+                    SectionBudget.getShared().getUsed(),
+                    SectionBudget.getShared().getMaxSections()));
         }
         return blocks > 0 || registry.getLastFlushedBlocks() > 0;
     }

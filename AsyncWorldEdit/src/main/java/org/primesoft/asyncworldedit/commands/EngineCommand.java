@@ -120,6 +120,12 @@ public class EngineCommand {
             player.say(MessageType.CMD_ENGINE_STATUS_FORCED.format());
         }
 
+        //Undo mode on the status output so benchmark screenshots are
+        //self-documenting (the mode is config-static, no live switch)
+        player.say(String.format("[ENGINE] undo-mode=%s spool-threshold=%dMB",
+                ConfigProvider.engine().isColumnarUndo() ? "columnar" : "changeset",
+                ConfigProvider.engine().getUndoSpoolThresholdMb()));
+
         player.say(MessageType.CMD_ENGINE_STATUS_COUNTERS.format(
                 Integer.toString(JobBufferRegistry.getInstance().getBufferCount()),
                 Integer.toString(SectionBudget.getShared().getUsed())));

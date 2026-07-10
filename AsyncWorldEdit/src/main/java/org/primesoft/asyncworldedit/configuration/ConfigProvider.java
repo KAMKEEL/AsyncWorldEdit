@@ -478,9 +478,18 @@ public class ConfigProvider {
         log("AWE block placement engine: "
                 + (m_bufferedEngineActive
                         ? "buffered (buffer-first direct chunk placement)"
-                        : "classic (per block placement)"));
+                        : "classic (per block placement)")
+                + ", undo-mode: "
+                + (m_configEngine.isColumnarUndo() ? "columnar" : "changeset"));
 
-        org.primesoft.asyncworldedit.chunkbatch.EngineDebug.setEnabled(m_configEngine.isDebug());
+        //Engine debug is a single channel behind the live toggle (awe engine
+        //debug on|off). Seeded from engine.debug OR the legacy messages.debug
+        //flag: admins who knew the old flag as "show the per run placer line"
+        //keep getting the engine lines (the old [BP RUN] content folded into
+        //the [ENGINE] run line); messages.debug alone still drives the non
+        //engine chatter (injector, session and undo cleanup logging).
+        org.primesoft.asyncworldedit.chunkbatch.EngineDebug.setEnabled(
+                m_configEngine.isDebug() || m_configMessages.isDebugOn());
     }
 
     /**

@@ -23,7 +23,12 @@ awe:
     #per job columnar undo log memory budget (MB) before it spools to a temp
     #file in the undo folder
     undo-spool-threshold-mb: 8
-    #verbose engine logging: per placer run + per job completion stats
+    #verbose engine logging: the per placer run [ENGINE] line (blocks, wall
+    #time, TPS, budget, queue + buffer counters) and the per job completion
+    #line (blocks/sec, heap-peak/delta, minTPS, budget-exceeded, gc). This
+    #key only seeds the live toggle at startup/reload - flip it in game with
+    #/awe engine debug on|off. Backward compat: messages.debug=true also
+    #turns these lines on (the old [BP RUN] line folded into [ENGINE]).
     debug: false
     #region streamed flushing (buffered engine): chunks of a running job are
     #flushed DURING production instead of all at once at job end - blocks pop
@@ -113,7 +118,9 @@ awe:
   #File containing all the messages
   strings: "english.yml"
   messages:
-    #Show debug messages
+    #Show debug messages: the NON engine chatter (injector operation tracing,
+    #session/undo file logging). Backward compat: true also enables the
+    #[ENGINE] debug lines, which have their own switch at awe.engine.debug
     debug: false
     #Show undo cleanup messages
     #Valid options: 
