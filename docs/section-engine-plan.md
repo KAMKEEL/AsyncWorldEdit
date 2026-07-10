@@ -332,7 +332,46 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
      semantics for half a win.
   //paste, //stack and //move stay on the per-block buffered lane,
   which already streams, bounds memory and captures columnar undo.
-- [ ] Wave 4: section-level undo replay + tests
+- [x] Wave 4: section-level undo/redo replay (commit 9e5b025). The
+  spec's PRIMARY option shipped (direct run lowering, not the lesser
+  batch-changes fallback). Seam: CompositeChangeSet's iterator now
+  implements IColumnarRunSource.nextRun (the iterator instance reaches
+  UndoProcessor untouched - MemoryMonitorChangeSet passes iterators
+  through and ThreadSafeChangeSet.wrapIterator forwards
+  IThreadSafeIterator as-is; verified). Undo/RedoProcessor loop: bulk
+  runs whenever offered, per-change otherwise - the two consumption
+  modes are interchangeable at any point (a refused or
+  lookahead-blocked run is emitted per change; a partially emitted run
+  is re-offered as its remaining interval; pinned by tests). Phase 3
+  ordering contracts inherited by construction: nextRun advances
+  fetchColumnar's own cursors and never crosses a phase boundary
+  (backward columnar-then-object skipping redo-only segments; forward
+  object-then-columnar including redo-only in append order). WRITE
+  TARGET decision: fills go to the session player's LOOSE buffer (job
+  id -1) - the SAME buffer the replay's per block writes land in
+  (unwrapped vectors extract -1 + the AsyncWorld player), so
+  last-write-wins between runs and per block changes rides the global
+  write sequence instead of cross-buffer flush timing; loose ids are
+  never registered with the columnar registry, so undo-of-undo capture
+  stays impossible. KEY FINDING: bypassHistory sits BELOW MaskingExtent
+  and BlockChangeLimiter in the injected EditSession, so undo writes
+  never saw masks/limits anyway (processUndo's setMask is vestigial for
+  block writes) - no mask gate needed; a session block bag DOES gate
+  (BlockBagExtent is below bypassHistory) -> per-change lane.
+  Eligibility whitelist: fast-lane on + buffered +
+  ChunkBatchWriter.isActive() (volatile-only; the probing
+  isDirectAvailable is main-thread-only and undo runs async) +
+  BlocksHub logging off + no block bag; per run: BatchEligibility +
+  one canPlace (blacklist) per constant-value run. Budget refusal =
+  backpressure with 10s stall abort off the main thread, immediate
+  per-change fallback ON the main thread (sleeping there would starve
+  the drain that frees the budget). Geometry:
+  SectionMath.intervalToBoxes (y-major index layout -> partial row /
+  whole rows / whole planes, a handful of boxes per run). Tests:
+  SectionIntervalBoxTest (6, incl. duplicate-free exact coverage over
+  14 interval shapes), CompositeChangeSetTest +5 (backward/forward run
+  phases, refusal remainder, lookahead block, redo-only segments
+  run-wise). Suite: 237 green.
 - [ ] Wave 5: telemetry (lane= tag), awe.engine.fast-lane master
   switch (NOT yet implemented - the lane is currently always-on when
   eligible; add the config gate in this wave), config comments,
@@ -343,5 +382,5 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
   are engine.mode: classic or any eligibility condition (e.g. a
   session mask) - and //undo always has undo-mode: changeset.
 
-Suite count when this log was last updated: 226 green (Desktop jar
+Suite count when this log was last updated: 237 green (Desktop jar
 last refreshed at commit c07f81a; refresh again at wave 5 final).
