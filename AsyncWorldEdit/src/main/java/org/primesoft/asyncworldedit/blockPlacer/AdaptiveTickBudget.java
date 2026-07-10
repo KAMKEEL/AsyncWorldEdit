@@ -188,7 +188,15 @@ public class AdaptiveTickBudget {
                 m_tpsEstimate = MAX_TPS;
             } else {
                 double ticksElapsed = (m_count - 1) * m_ticksPerRun;
-                m_tpsEstimate = ticksElapsed / (spanNanos / NANOS_IN_S);
+                //After a long stall the scheduler fires the missed runs back
+                //to back, so the window spans less wall time than ticksPerRun
+                //implies and the raw estimate overshoots the physical 20 TPS
+                //ceiling. Clamp to MAX_TPS: this is budget-neutral, because
+                //computeBudget already caps the idle fraction at 1.0 for any
+                //estimate at or above the target - the clamp only keeps the
+                //reported estimate (debug lines, minTPS telemetry) honest.
+                m_tpsEstimate = Math.min(MAX_TPS,
+                        ticksElapsed / (spanNanos / NANOS_IN_S));
             }
         }
 

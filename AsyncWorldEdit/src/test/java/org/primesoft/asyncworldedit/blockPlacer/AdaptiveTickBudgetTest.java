@@ -185,6 +185,24 @@ public class AdaptiveTickBudgetTest {
     }
 
     @Test
+    public void tpsEstimateIsClampedDuringCatchUpAfterStall() {
+        AdaptiveTickBudget budget = new AdaptiveTickBudget(16, 20, 30, 2, 1, 20);
+
+        //A long stall, then the scheduler fires the missed runs back to
+        //back: 19 catch-up runs spaced 25 ms apart with 1 tick per run
+        //= raw 40 TPS over the window, twice the physical ceiling
+        tick(budget, 5000000000L);
+        long granted = ticks(budget, 25000000L, 19);
+
+        //The estimate is clamped to the 20 TPS ceiling...
+        assertEquals(20.0, budget.getTpsEstimate(), 0.0);
+        //...and the budget is exactly the healthy full-speed budget (the
+        //clamp is budget-neutral: the idle fraction is already capped at
+        //1.0 for any estimate at or above the target)
+        assertEquals(50 * MS, granted);
+    }
+
+    @Test
     public void shouldContinueStopsExactlyAtBudget() {
         AdaptiveTickBudget budget = new AdaptiveTickBudget(16, 20, 30, 2, 1, 20);
 
