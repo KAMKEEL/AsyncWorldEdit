@@ -506,6 +506,27 @@ public class ColumnarUndoLogTest {
     }
 
     @Test
+    public void idsAboveSixteenBitsAreMaskedNotScrambled() throws Exception {
+        //SectionMath.encodeSlot admits 20-bit ids (layout slack), but the
+        //run encoding packs (id << 16) | data: an oversized id must be
+        //masked to 16 bits (warned once), never allowed to corrupt both
+        //columns of the run
+        ColumnarUndoLog log = log(Long.MAX_VALUE);
+
+        //0x11170 = 70000 -> masked to 0x1170 = 4464; the data columns
+        //must stay untouched
+        log.beginSection(0, 0, 0, 0, 0);
+        log.capture(0, 70000, 12, 70001, 13);
+        log.endSection();
+
+        Recorder recorder = new Recorder();
+        log.replayForward(recorder);
+        assertEquals(1, recorder.changes.size());
+        assertEquals("0,0,0:" + (70000 & 0xFFFF) + ":12>"
+                + (70001 & 0xFFFF) + ":13", recorder.changes.get(0));
+    }
+
+    @Test
     public void segmentCursorExposesMetaAndRunsFromMemoryAndFile() throws Exception {
         //Threshold 0: every endSection spills, so the cursor reads the
         //runs back from the spool file with exact values

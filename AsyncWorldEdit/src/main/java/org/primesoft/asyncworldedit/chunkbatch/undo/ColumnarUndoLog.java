@@ -281,6 +281,11 @@ public final class ColumnarUndoLog {
     private boolean m_sealed;
 
     /**
+     * An id above 16 bits was truncated at capture (logged once)
+     */
+    private boolean m_idTruncationLogged;
+
+    /**
      * @param spoolFile per job temp file for the spilled segments (created
      * lazily, deleted by {@link #close})
      * @param spoolThresholdBytes in-memory run bytes above which closed
@@ -342,6 +347,22 @@ public final class ColumnarUndoLog {
     public void capture(int slotIndex, int oldId, int oldData, int newId, int newData) {
         if (m_open == null) {
             throw new IllegalStateException("no section capture is open");
+        }
+
+        //The run encoding packs (id << 16) | data: ids above 16 bits
+        //would corrupt BOTH columns. The engine treats Short.MAX_VALUE as
+        //the NEID id ceiling everywhere (see SectionMath.encodeSlot for
+        //the invariant), so this cannot fire for engine-produced values -
+        //mask defensively and warn once instead of scrambling the undo.
+        if (((oldId | newId) & ~0xFFFF) != 0) {
+            oldId &= 0xFFFF;
+            newId &= 0xFFFF;
+            if (!m_idTruncationLogged) {
+                m_idTruncationLogged = true;
+                log("Warning: a columnar undo capture carried a block id"
+                        + " above 65535; the id was truncated to 16 bits"
+                        + " (undo of the affected blocks may be wrong).");
+            }
         }
 
         final int oldPacked = (oldId << 16) | (oldData & 0xFFFF);

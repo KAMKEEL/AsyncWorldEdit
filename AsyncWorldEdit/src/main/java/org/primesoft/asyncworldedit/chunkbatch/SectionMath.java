@@ -200,6 +200,17 @@ public final class SectionMath {
      * Encode a pending block into a slot value. Bit 0 is the notify flag,
      * bits 1..4 the metadata, bits 5 and up the block id. The result is
      * always &gt;= 0 so {@link #EMPTY_SLOT} can mark unused slots.
+     *
+     * <p>
+     * ID CEILING INVARIANT: the slot layout physically admits 20-bit ids,
+     * but every id the engine handles is at most 16 bits - the NEID
+     * ceiling is Short.MAX_VALUE (the write path caps at
+     * {@link #ID16_MAX_ID} / {@link #VANILLA_MAX_ID} per layout) and the
+     * columnar undo run encoding packs ids into 16 bits
+     * (ColumnarUndoLog.capture masks defensively and warns once). The
+     * headroom here is layout slack, not a supported range: anything
+     * introducing ids above 0xFFFF must widen the undo run encoding
+     * first.</p>
      */
     public static int encodeSlot(int id, int data, boolean notify) {
         return ((id & 0xFFFFF) << 5) | ((data & 0xF) << 1) | (notify ? 1 : 0);
