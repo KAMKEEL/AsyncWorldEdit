@@ -418,6 +418,105 @@ public final class JobBufferRegistry {
     }
 
     /**
+     * Bulk-fill a chunk-column box of a job's buffer with one constant
+     * (id, data) - the fast lane's production call. The box must lie
+     * within a single chunk column (the compiler splits the region with
+     * {@link CuboidSplitter}); the caller has verified batch eligibility
+     * exactly like {@link #buffer}.
+     *
+     * The shared section budget is acquired for every section the box
+     * newly allocates BEFORE anything is written; when the budget cannot
+     * cover the box the fill stores NOTHING and returns -1 - the caller
+     * must abort the fast lane (discard the job's buffers via
+     * {@link #discardJob} and rerun the whole operation through the per
+     * block path, never half-fast).
+     *
+     * @return the number of newly used slots, or -1 on budget refusal
+     */
+    public int fillChunkBox(IPlayerEntry player, int jobId, World weWorld,
+            IWorld aweWorld, IJobEntry job,
+            int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify) {
+        if (aweWorld == null || y0 < 0 || y1 > 255 || y0 > y1) {
+            return -1;
+        }
+
+        final JobBuffer buf = getOrCreate(player, jobId, weWorld, aweWorld, job);
+        m_producer.set(buf);
+
+        final int cx = SectionMath.blockToChunk(x0);
+        final int cz = SectionMath.blockToChunk(z0);
+        final long key = SectionMath.chunkKey(cx, cz);
+
+        for (;;) {
+            PendingChunk chunk = buf.getChunks().get(key);
+            if (chunk == null) {
+                final PendingChunk created = new PendingChunk(cx, cz);
+                synchronized (created) {
+                    if (buf.getChunks().putIfAbsent(key, created) != null) {
+                        continue;
+                    }
+                    buf.getChunkOrder().add(key);
+                    return fillLocked(buf, created, x0, y0, z0, x1, y1, z1,
+                            id, data, notify);
+                }
+            }
+
+            synchronized (chunk) {
+                if (buf.getChunks().get(key) != chunk) {
+                    continue;
+                }
+                return fillLocked(buf, chunk, x0, y0, z0, x1, y1, z1,
+                        id, data, notify);
+            }
+        }
+    }
+
+    /**
+     * Fill into a locked, still-mapped chunk: acquire the budget for the
+     * new sections, fill, update the counters. -1 (nothing stored) when
+     * the budget cannot cover the box.
+     */
+    private int fillLocked(JobBuffer buf, PendingChunk chunk,
+            int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify) {
+        final int newSections = chunk.newSectionsInYRange(y0, y1);
+        int acquired = 0;
+        while (acquired < newSections) {
+            if (!SectionBudget.getShared().tryAcquire()) {
+                SectionBudget.getShared().release(acquired);
+                return -1;
+            }
+            acquired++;
+        }
+
+        final int added = chunk.fillBox(x0, y0, z0, x1, y1, z1, id, data,
+                notify, (int) m_writeSeq.getAndIncrement());
+        chunk.setLastTouchRun(m_runCounter);
+
+        buf.getSectionsHeld().addAndGet(newSections);
+        buf.getQueuedBlocks().addAndGet(added);
+        buf.getTotalBufferedCounter().addAndGet(added);
+        return added;
+    }
+
+    /**
+     * Drop a specific job's unflushed buffers (fast lane abort: the
+     * compiler hit the budget wall or was canceled mid-compile and the
+     * whole operation reruns per block - nothing half-fast may flush).
+     * Releases the shared budget and prunes the buffer; the job's capture
+     * sink registration is dropped by the discard path. The columnar log
+     * itself stays attached to the session's composite (it captured
+     * nothing yet) and is cleaned by the session lifecycle.
+     */
+    public void discardJob(UUID uuid, int jobId) {
+        final JobBuffer buf = m_buffers.get(new Key(uuid, jobId));
+        if (buf != null) {
+            discardBuffer(buf);
+        }
+    }
+
+    /**
      * Overlay read for the producer thread: the pending slot of a position
      * in this thread's own job buffer, {@link SectionMath#EMPTY_SLOT} when
      * nothing is buffered there. Consulted by {@link ChunkBatchWriter} so

@@ -182,6 +182,77 @@ public final class PendingChunk {
     }
 
     /**
+     * Bulk fill: store the same pending (id, data) for every position of a
+     * chunk-local box. The fast lane's compilation target - no per block
+     * calls above this method, the inner loops are plain array writes.
+     *
+     * The box must lie inside this chunk (world coordinates) with
+     * 0 &lt;= y0 &lt;= y1 &lt;= 255 and x0 &lt;= x1, z0 &lt;= z1; the CALLER
+     * has already acquired the shared section budget for every section this
+     * box newly allocates (see {@link #newSectionsInYRange}). Every filled
+     * slot takes the same write sequence: the fill is one operation-level
+     * write, and within equal sequences the classic replay's index order is
+     * deterministic (attachments never come from fills).
+     *
+     * @return the number of slots that were EMPTY before this fill (the
+     * growth of {@link #getCount()})
+     */
+    public int fillBox(int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify, int seq) {
+        if (SectionMath.blockToChunk(x0) != m_cx || SectionMath.blockToChunk(x1) != m_cx
+                || SectionMath.blockToChunk(z0) != m_cz || SectionMath.blockToChunk(z1) != m_cz
+                || y0 < 0 || y1 > 255 || x0 > x1 || y0 > y1 || z0 > z1) {
+            return 0;
+        }
+
+        int added = 0;
+        for (int sy = SectionMath.sectionOfY(y0); sy <= SectionMath.sectionOfY(y1); sy++) {
+            final int secBase = sy << 4;
+            final int fy0 = Math.max(y0, secBase);
+            final int fy1 = Math.min(y1, secBase + 15);
+
+            PendingSection section = m_sections[sy];
+            if (section == null) {
+                section = new PendingSection();
+                m_sections[sy] = section;
+                m_sectionCount++;
+            }
+
+            final int before = section.getCount();
+            for (int y = fy0; y <= fy1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    for (int x = x0; x <= x1; x++) {
+                        section.set(SectionMath.sectionIndex(x, y, z), id, data, notify, seq);
+                    }
+                }
+            }
+            added += section.getCount() - before;
+        }
+
+        m_count += added;
+        m_lastWriteSeq = seq;
+        return added;
+    }
+
+    /**
+     * Number of NEW section buffers a fill spanning [y0..y1] would
+     * allocate. The registry acquires exactly this many shared budget
+     * slots before calling {@link #fillBox}.
+     */
+    public int newSectionsInYRange(int y0, int y1) {
+        if (y0 < 0 || y1 > 255 || y0 > y1) {
+            return 0;
+        }
+        int missing = 0;
+        for (int sy = SectionMath.sectionOfY(y0); sy <= SectionMath.sectionOfY(y1); sy++) {
+            if (m_sections[sy] == null) {
+                missing++;
+            }
+        }
+        return missing;
+    }
+
+    /**
      * The write sequence of the most recent write into this chunk (0 when
      * nothing was ever stored). With the registry's monotonic global
      * sequence this orders a job's chunks from least to most recently
