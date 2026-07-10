@@ -320,6 +320,7 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
         log("= /_/  |_/____/\\__, /_/ /_/\\___/ |__/|__/\\____/_/  /_/\\__,_/_____/\\__,_/_/\\__/    =");
         log("=             /____/                                                              =");
         log("= Author: SBPrime                                                                 =");
+        log("= Build: KAWE2 (buffer-first engine, columnar undo)                               =");
         log("=                                                                                 =");
         log("===================================================================================");
         
