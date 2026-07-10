@@ -56,6 +56,7 @@ import org.bukkit.World;
 import org.primesoft.asyncworldedit.chunkbatch.PendingChunk;
 import org.primesoft.asyncworldedit.chunkbatch.PendingSection;
 import org.primesoft.asyncworldedit.chunkbatch.SectionMath;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ISlotReader;
 
 /**
  * Applies a {@link PendingChunk} directly to the NMS chunk of a Bukkit
@@ -421,6 +422,41 @@ public class NmsChunkWriter {
         final Object[] sections = (Object[]) m_handles.getSections.invoke(chunk);
 
         return readRawInSections(sections, x, y, z);
+    }
+
+    /**
+     * A packed raw reader over one chunk's live section arrays, for the
+     * flush-time undo capture: the sections are fetched once, then every
+     * pending slot of the chunk is read without further chunk lookups.
+     * Loads the chunk if needed (the flush writes it right after). Main
+     * thread only.
+     *
+     * @param world the Bukkit world
+     * @param cx chunk x
+     * @param cz chunk z
+     * @return a reader returning {@link SectionMath#EMPTY_SLOT} for
+     * positions its section layout cannot decode (the caller falls back
+     * to a world read)
+     * @throws Exception when the reflective section fetch fails
+     */
+    public ISlotReader rawReader(
+            World world, int cx, int cz) throws Exception {
+        world.getChunkAt(cx, cz);
+
+        final Object handle = m_handles.worldGetHandle.invoke(world);
+        final Object chunk = m_handles.getChunk.invoke(handle, cx, cz);
+        final Object[] sections = (Object[]) m_handles.getSections.invoke(chunk);
+
+        return new ISlotReader() {
+            @Override
+            public int read(int x, int y, int z) {
+                try {
+                    return readRawInSections(sections, x, y, z);
+                } catch (Exception ex) {
+                    return SectionMath.EMPTY_SLOT;
+                }
+            }
+        };
     }
 
     /**

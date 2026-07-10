@@ -65,6 +65,9 @@ import org.primesoft.asyncworldedit.chunkbatch.nms.NmsChunkWriter;
 import org.primesoft.asyncworldedit.chunkbatch.nms.NmsHandles;
 import org.primesoft.asyncworldedit.chunkbatch.nms.NmsProbe;
 import org.primesoft.asyncworldedit.chunkbatch.nms.ProbeException;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ChunkCaptureUtil;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ISlotReader;
 import org.primesoft.asyncworldedit.platform.bukkit.IBukkitWorld;
 
 /**
@@ -194,6 +197,11 @@ public class ChunkBatchWriter {
      * Chunk flush error was logged already
      */
     private boolean m_flushErrorLogged;
+
+    /**
+     * Undo capture error was logged already
+     */
+    private boolean m_captureErrorLogged;
 
     /**
      * Upper bound of allocated pending section buffers (memory cap). A
@@ -781,8 +789,29 @@ public class ChunkBatchWriter {
      * @param chunk the detached pending chunk
      */
     public void flushJobChunk(World parent, IWorld bukkitWorld, PendingChunk chunk) {
+        flushJobChunk(parent, bukkitWorld, chunk, null);
+    }
+
+    /**
+     * Flush a single job buffer chunk with flush-time undo capture: the
+     * old value of every pending slot is captured into the sink BEFORE the
+     * chunk is written (direct section write or classic replay), so the
+     * capture always sees the pre-write world.
+     *
+     * @param parent the WorldEdit world for the classic replay
+     * @param bukkitWorld the AWE world for the direct chunk writes
+     * @param chunk the detached pending chunk
+     * @param captureSink the undo capture sink of the owning job, null
+     * when the job records undo through the object change set
+     */
+    public void flushJobChunk(World parent, IWorld bukkitWorld, PendingChunk chunk,
+            ICaptureSink captureSink) {
         if (parent == null || bukkitWorld == null || chunk == null) {
             return;
+        }
+
+        if (captureSink != null) {
+            captureJobChunk(parent, bukkitWorld, chunk, captureSink);
         }
 
         final List<DeferredBlock> deferred = new ArrayList<DeferredBlock>();
@@ -802,6 +831,68 @@ public class ChunkBatchWriter {
             }
         } finally {
             replayDeferred(deferred);
+        }
+    }
+
+    /**
+     * Capture the pre-write old values of every pending slot of a job
+     * buffer chunk into the sink, BEFORE the chunk is written. Old values
+     * come from the raw NMS section reads when available (one reflective
+     * section fetch for the whole chunk); any slot the raw layout cannot
+     * decode - and every slot when the direct writer is unavailable (the
+     * classic-degradation path) - falls back to a per block parent world
+     * read. A capture failure is logged once and never fails the flush.
+     */
+    private void captureJobChunk(final World parent, IWorld bukkitWorld,
+            PendingChunk chunk, ICaptureSink captureSink) {
+        try {
+            final ISlotReader worldReader = new ISlotReader() {
+                @Override
+                public int read(int x, int y, int z) {
+                    try {
+                        final BaseBlock block = parent.getBlock(new Vector(x, y, z));
+                        return SectionMath.encodeSlot(block.getType(), block.getData(), false);
+                    } catch (Throwable ex) {
+                        return SectionMath.EMPTY_SLOT;
+                    }
+                }
+            };
+
+            ISlotReader reader = worldReader;
+            final NmsChunkWriter nmsWriter = m_nmsWriter;
+            final org.bukkit.World bukkit = resolveBukkitWorld(bukkitWorld);
+            if (nmsWriter != null && !m_runtimeDisabled && bukkit != null) {
+                try {
+                    final ISlotReader raw = nmsWriter.rawReader(
+                            bukkit, chunk.getX(), chunk.getZ());
+                    reader = new ISlotReader() {
+                        @Override
+                        public int read(int x, int y, int z) {
+                            final int slot = raw.read(x, y, z);
+                            return slot != SectionMath.EMPTY_SLOT
+                                    ? slot : worldReader.read(x, y, z);
+                        }
+                    };
+                } catch (Exception ex) {
+                    //Raw section access failed: the parent world fallback
+                    //still captures every slot, just slower
+                }
+            }
+
+            final int misses = ChunkCaptureUtil.capture(chunk, captureSink, reader);
+            if (misses > 0 && !m_captureErrorLogged) {
+                m_captureErrorLogged = true;
+                log(String.format(
+                        "Warning: %1$d block(s) of buffered chunk %2$d,%3$d could not"
+                        + " be read for undo capture (skipped).",
+                        misses, chunk.getX(), chunk.getZ()));
+            }
+        } catch (Throwable ex) {
+            if (!m_captureErrorLogged) {
+                m_captureErrorLogged = true;
+                log("Error while capturing undo of buffered chunk " + chunk.getX()
+                        + "," + chunk.getZ() + ": " + ex);
+            }
         }
     }
 
