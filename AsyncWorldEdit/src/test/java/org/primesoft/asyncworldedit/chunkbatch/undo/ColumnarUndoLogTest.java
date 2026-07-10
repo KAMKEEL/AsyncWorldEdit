@@ -306,6 +306,37 @@ public class ColumnarUndoLogTest {
     }
 
     @Test
+    public void segmentCursorExposesMetaAndRunsFromMemoryAndFile() throws Exception {
+        //Threshold 0: every endSection spills, so the cursor reads the
+        //runs back from the spool file with exact values
+        ColumnarUndoLog log = log(0);
+
+        log.beginSection(3, -1, 2, 10, 12);
+        log.capture(5, 1, 2, 3, 4);   //run 1
+        log.capture(6, 1, 2, 3, 4);   //extends run 1
+        log.capture(9, 7, 0, 3, 4);   //run 2 (slot gap)
+        log.endSection();
+
+        assertEquals(3, log.getSegmentChunkX(0));
+        assertEquals(-1, log.getSegmentChunkZ(0));
+        assertEquals(2, log.getSegmentSection(0));
+        assertEquals(2, log.getSegmentRunCount(0));
+        assertEquals(3, log.getSegmentCaptureCount(0));
+
+        final int[] runs = log.loadSegmentRuns(0);
+        assertEquals(ColumnarUndoLog.INTS_PER_RUN * 2, runs.length);
+        assertEquals(5, ColumnarUndoLog.runStartSlot(runs, 0));
+        assertEquals(2, ColumnarUndoLog.runLength(runs, 0));
+        assertEquals(1, ColumnarUndoLog.runOldId(runs, 0));
+        assertEquals(2, ColumnarUndoLog.runOldData(runs, 0));
+        assertEquals(3, ColumnarUndoLog.runNewId(runs, 0));
+        assertEquals(4, ColumnarUndoLog.runNewData(runs, 0));
+        assertEquals(9, ColumnarUndoLog.runStartSlot(runs, 1));
+        assertEquals(1, ColumnarUndoLog.runLength(runs, 1));
+        assertEquals(7, ColumnarUndoLog.runOldId(runs, 1));
+    }
+
+    @Test
     public void segmentSeqRangesArePreservedForTheCompositeMerge() throws Exception {
         ColumnarUndoLog log = log(Long.MAX_VALUE);
 

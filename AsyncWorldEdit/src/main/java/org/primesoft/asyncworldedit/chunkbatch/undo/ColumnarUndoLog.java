@@ -114,7 +114,49 @@ public final class ColumnarUndoLog {
      * Ints per encoded run: (slotIndex<<16|count), (oldId<<16|oldData),
      * (newId<<16|newData)
      */
-    static final int INTS_PER_RUN = 3;
+    public static final int INTS_PER_RUN = 3;
+
+    /**
+     * First slot index of a run (see {@link #loadSegmentRuns})
+     */
+    public static int runStartSlot(int[] runs, int run) {
+        return runs[run * INTS_PER_RUN] >>> 16;
+    }
+
+    /**
+     * Number of consecutive slots in a run
+     */
+    public static int runLength(int[] runs, int run) {
+        return runs[run * INTS_PER_RUN] & 0xFFFF;
+    }
+
+    /**
+     * Old block id of every slot of a run
+     */
+    public static int runOldId(int[] runs, int run) {
+        return runs[run * INTS_PER_RUN + 1] >>> 16;
+    }
+
+    /**
+     * Old metadata of every slot of a run
+     */
+    public static int runOldData(int[] runs, int run) {
+        return runs[run * INTS_PER_RUN + 1] & 0xFFFF;
+    }
+
+    /**
+     * New block id of every slot of a run
+     */
+    public static int runNewId(int[] runs, int run) {
+        return runs[run * INTS_PER_RUN + 2] >>> 16;
+    }
+
+    /**
+     * New metadata of every slot of a run
+     */
+    public static int runNewData(int[] runs, int run) {
+        return runs[run * INTS_PER_RUN + 2] & 0xFFFF;
+    }
 
     /**
      * One captured section flush: header + either in-memory runs or a
@@ -499,6 +541,53 @@ public final class ColumnarUndoLog {
     public int[] getSegmentSeqRange(int index) {
         final Segment segment = m_segments.get(index);
         return new int[]{segment.firstSeq, segment.lastSeq};
+    }
+
+    /**
+     * Chunk x of a segment (cursor API for the composite change set)
+     */
+    public int getSegmentChunkX(int index) {
+        return m_segments.get(index).cx;
+    }
+
+    /**
+     * Chunk z of a segment
+     */
+    public int getSegmentChunkZ(int index) {
+        return m_segments.get(index).cz;
+    }
+
+    /**
+     * Section index (0..15) of a segment
+     */
+    public int getSegmentSection(int index) {
+        return m_segments.get(index).section;
+    }
+
+    /**
+     * Number of encoded runs of a segment
+     */
+    public int getSegmentRunCount(int index) {
+        return m_segments.get(index).runCount;
+    }
+
+    /**
+     * Number of captured block changes of a segment
+     */
+    public int getSegmentCaptureCount(int index) {
+        return m_segments.get(index).captureCount;
+    }
+
+    /**
+     * The encoded runs of a segment, from memory or the spool file (the
+     * segment directory streams one segment at a time - the whole file is
+     * never loaded). Decode with the static run accessors.
+     *
+     * @param index segment index in append order
+     * @throws IOException when a spooled segment cannot be read
+     */
+    public int[] loadSegmentRuns(int index) throws IOException {
+        return loadRuns(m_segments.get(index));
     }
 
     /**
