@@ -470,6 +470,125 @@ flat.
   undo mode; docs: architecture summary + admin guide section in this
   docs folder.
 
+### Phase 4 records (2026-07-10, suite green at every commit)
+
+1. DOUBLE REPRESENTATION - NOT unified, documented (the Phase 0 finding
+   anticipated this outcome). Phases 1-3 did not leave the window path
+   redundant: it still serves the main-thread final writes of classic
+   queue entries (whose per block bookkeeping must keep running per
+   entry), the budget-full classic fallbacks of buffered jobs and the
+   loose job-less writes (//undo replay fragments). The two pools have
+   different lifetimes (one placer run vs one job), different threads
+   (main vs producer) and different keys (world vs player+job), while
+   already sharing the single SectionBudget and the single flush path
+   (ChunkBatchWriter.flushJobChunk) - unification would only merge the
+   bookkeeping of two lifetimes and put the pinned cross-pool ordering
+   contracts (clearPending last-queued-wins, detach-before-flush) at
+   risk for zero memory or speed gain. Rationale recorded in both class
+   javadocs; final architecture table in engine-architecture.md.
+2. DEAD CODE DELETED - the premium DirectChunkAPI subsystem (62 files,
+   ~9,900 lines): the directChunk packages (base classes, chunk section
+   data, block relighter), the /chunk excommands + their mask command
+   bases, the platform bukkit DirectChunkAPI wiring, the adapter
+   provider/factory/registry (adapter/map/MapUtils KEPT - used by the
+   bukkit platform), the wrapped-chunk changeset serializers (no undo
+   file can contain chunk changes: the commands that produced them were
+   never registered here), ConfigDirectChunkApi + ConfigProvider
+   .directChunk(), the chunk command strings, and in a second pass the
+   dc-flagged BlocksHub plumbing (dc overloads of logBlock/hasAccess/
+   canPlace through the interface, bridge, null integration and both
+   bridge modules), BHLevel.All and the isDcEnabled parsing. KEPT with
+   reason: the api/directChunk + APIInner interfaces and the
+   getDirectChunkAPI/getChunkOperations/getAdapter accessors (public
+   API contract; the core stubs return null exactly as the adapterless
+   runtime always did) and ConfigRenderer.isDirectChunkEnabled (that
+   flag belongs to the KAWE2 batch writer). The historical v6->v7 /
+   v17->v18 config updaters still write pruned keys when migrating
+   ancient configs; harmless, left alone.
+3. DEBUG CHANNELS CONSOLIDATED - one [ENGINE] channel behind the live
+   toggle. The old [BP RUN] line's content (blocks, wall time, TPS,
+   budget, +new: classic queue size) folded into the [ENGINE] run line
+   ahead of the buffered drain counters. Mapping: engine.debug OR
+   messages.debug seed the live toggle at config load (backward compat:
+   admins who knew messages.debug as "show the placer line" still get
+   the engine lines); `awe engine debug on|off` overrides live;
+   messages.debug alone keeps driving only the non-engine chatter
+   (injector tracing, session/undo file logging). Documented in the
+   config comments of both keys.
+4. GC TELEMETRY - the completion line appends ` gc=N/+Mms`: deltas of
+   the summed GarbageCollectorMXBeans collection count/time between the
+   job's first and last sampled run. Sampled once per placer run only
+   while engine debug is on (zero cost off, same guard as the heap
+   sampling); server-global like heap/TPS. /awe engine additionally
+   prints `undo-mode=... spool-threshold=...` so benchmark screenshots
+   are self-documenting.
+5. DOCS + CONFIG - engine-architecture.md written (pipeline, two pools,
+   layouts, config surface, degradation matrix, admin guide); startup
+   line now states engine mode AND undo mode; bundled config.yml
+   comments final-passed; Desktop WORLDEDIT config.yml matched.
+6. BRANDING - plugin version 3.5.4-KAWE2 (the version checker only
+   parses the numeric prefix) + a fork line in the enable banner.
+7. Final suite: 191 tests, green (190 at phase entry + 1 new gc format
+   test).
+
+### Phase 4 benchmark runbook (constrained heap, run by Kamron in-game)
+
+Goal: prove the memory story end to end - classic/changeset should GC
+thrash on a 2 GB heap, buffered/columnar should stay flat.
+
+Setup
+
+- Test instance (not production), 2 GB heap: add `-Xmx2G -Xms2G` to the
+  server JVM flags (fixed Xms removes heap-resize noise).
+- Flat pre-generated area; no other players; no other jobs.
+- A ~5M block selection, e.g. `//pos1` / `//pos2` spanning 400 x 32 x 400
+  (= 5,120,000). Keep the SAME selection for every run.
+- `awe.engine.debug: true` in config (or `/awe engine debug on` after
+  every restart).
+
+Per-mode procedure (repeat for each matrix row below)
+
+1. Set the mode: engine mode live via `/awe engine buffered|classic`;
+   undo-mode by editing `awe.engine.undo-mode` + `/awe reload` (new
+   jobs pick it up; no restart needed).
+2. Screenshot `/awe engine` - it prints mode, undo-mode and spool
+   threshold, so the screenshot self-documents the row.
+3. WARMUP: `//set 1`, wait for the job to finish, `//undo`, wait.
+   DISCARD these numbers (JIT, chunk cache, probe, undo file warmup).
+4. Measured: 3x { `//set 1` -> record the [ENGINE] job line -> `//undo`
+   -> record the undo replay's [ENGINE] run/job lines }. Alternate
+   `//set 1` and `//set 5` between rounds so no round is a no-op.
+5. Record per round, from the `[ENGINE] job N done:` line: blocks/sec
+   (avg), minTPS, heap-peak, heap-delta, budget-exceeded, gc=N/+Mms.
+   For the undo half note wall time and gc from the surrounding lines.
+
+Matrix (2x2; the classic+columnar cell is a sanity row - the columnar
+seams only apply to buffered writes, so it must equal classic+changeset)
+
+| # | engine | undo-mode |
+|---|--------|-----------|
+| A | buffered | columnar |
+| B | buffered | changeset |
+| C | classic | changeset |
+| D | classic | columnar (sanity: expect == C) |
+
+Results table skeleton (median of the 3 measured rounds; keep the
+per-round numbers in the notes)
+
+| mode | blocks/sec | minTPS | heap-peak | heap-delta | budget-exc | gc count | gc time | undo wall | notes |
+|------|-----------|--------|-----------|------------|------------|----------|---------|-----------|-------|
+| A buffered+columnar | | | | | | | | | |
+| B buffered+changeset | | | | | | | | | |
+| C classic+changeset | | | | | | | | | |
+| D classic+columnar | | | | | | | | | |
+
+Expected shape: A flat heap-delta and near-zero gc during //set (the
+undo cost is a spooled file, not objects); B pays the op-time object
+changeset (heap-delta grows with job size, gc climbs); C additionally
+pays the per block queue entries; D == C. If A's gc count spikes,
+grab `/awe engine` right after the job - the section counters tell
+whether the budget or the changeset was the allocator.
+
 ## Operation coverage matrix
 
 | Operation | Path | Notes / test |

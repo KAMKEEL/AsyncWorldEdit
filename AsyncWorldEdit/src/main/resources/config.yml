@@ -5,8 +5,9 @@ awe:
   engine:
     #placement engine:
     # buffered = buffer-first: async edits are buffered straight into per job
-    #   chunk section buffers (no per block queue entry object) and flushed as
-    #   direct chunk writes when the job finishes; lowest memory + fastest.
+    #   chunk section buffers (no per block queue entry object) and streamed
+    #   out as direct chunk writes while the job runs (see stream below);
+    #   lowest memory + fastest.
     #   Requires BlocksHub access checking to be disabled (it bypasses the per
     #   block access hooks); when access checking is on AWE logs one line and
     #   falls back to classic automatically.
