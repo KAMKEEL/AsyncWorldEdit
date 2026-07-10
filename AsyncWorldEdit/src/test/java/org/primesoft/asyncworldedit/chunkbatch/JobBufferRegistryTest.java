@@ -276,6 +276,10 @@ public class JobBufferRegistryTest {
         }
 
         @Override
+        public void markMissing(int slotIndex) {
+        }
+
+        @Override
         public void endSection() {
         }
 

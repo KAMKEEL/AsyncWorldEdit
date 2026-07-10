@@ -78,6 +78,10 @@ public class ColumnarUndoRegistryTest {
         }
 
         @Override
+        public void markMissing(int slotIndex) {
+        }
+
+        @Override
         public void endSection() {
         }
 

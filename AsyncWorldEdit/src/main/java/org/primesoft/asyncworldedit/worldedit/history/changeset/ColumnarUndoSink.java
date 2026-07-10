@@ -144,6 +144,20 @@ public class ColumnarUndoSink implements ICaptureSink {
     }
 
     @Override
+    public void markMissing(int slotIndex) {
+        synchronized (m_log) {
+            if (m_broken) {
+                return;
+            }
+            try {
+                m_log.markCaptured(slotIndex);
+            } catch (Throwable ex) {
+                markBroken(ex);
+            }
+        }
+    }
+
+    @Override
     public void endSection() {
         synchronized (m_log) {
             if (m_broken) {

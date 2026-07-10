@@ -120,6 +120,12 @@ public final class ChunkCaptureUtil {
                             by + SectionMath.indexToY(index),
                             bz + SectionMath.indexToZ(index));
                     if (old == SectionMath.EMPTY_SLOT) {
+                        //Unreadable old value: drop the slot from the undo
+                        //record but MARK it captured - otherwise a later
+                        //re-flush of this section would capture the job's
+                        //own intermediate value as "old" (the caller logs
+                        //the miss count once)
+                        sink.markMissing(index);
                         misses++;
                         continue;
                     }

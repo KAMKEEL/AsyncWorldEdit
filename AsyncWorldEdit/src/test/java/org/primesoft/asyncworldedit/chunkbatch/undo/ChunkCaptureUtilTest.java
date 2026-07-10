@@ -85,6 +85,11 @@ public class ChunkCaptureUtilTest {
         }
 
         @Override
+        public void markMissing(int slotIndex) {
+            events.add("miss " + slotIndex);
+        }
+
+        @Override
         public void endSection() {
             events.add("end");
         }
@@ -155,11 +160,70 @@ public class ChunkCaptureUtilTest {
         });
 
         assertEquals(1, misses);
-        assertEquals(3, sink.events.size());
+        assertEquals(4, sink.events.size());
         assertEquals("begin 0,0,0:1-2", sink.events.get(0));
+        //The unreadable slot is dropped from the record but MARKED, so a
+        //re-flush cannot capture the job's own value as "old"
+        assertEquals("miss " + SectionMath.sectionIndex(0, 0, 0), sink.events.get(1));
         assertEquals("cap " + SectionMath.sectionIndex(1, 0, 0) + ":2:0>5:0",
-                sink.events.get(1));
-        assertEquals("end", sink.events.get(2));
+                sink.events.get(2));
+        assertEquals("end", sink.events.get(3));
+    }
+
+    @Test
+    public void reFlushAfterAMissDoesNotCaptureTheJobsOwnValueAsOld() throws Exception {
+        //End to end against the real log: flush one misses the read of
+        //slot (0,0,0); the re-flush of the same section reads the job's
+        //own intermediate value - it must NOT become the undo target
+        final java.io.File spool = java.io.File.createTempFile("awe-miss-test", ".bin");
+        spool.delete();
+        final ColumnarUndoLog log = new ColumnarUndoLog(spool, Long.MAX_VALUE);
+        try {
+            final PendingChunk first = new PendingChunk(0, 0);
+            first.setBlock(0, 0, 0, 5, 0, true, 1);
+
+            final org.primesoft.asyncworldedit.worldedit.history.changeset.ColumnarUndoSink sink
+                    = new org.primesoft.asyncworldedit.worldedit.history.changeset.ColumnarUndoSink(log, null);
+
+            assertEquals(1, ChunkCaptureUtil.capture(first, sink, new ISlotReader() {
+                @Override
+                public int read(int x, int y, int z) {
+                    return SectionMath.EMPTY_SLOT;
+                }
+            }));
+
+            //The chunk is rewritten and re-flushed; the world now reads
+            //the job's own 5
+            final PendingChunk second = new PendingChunk(0, 0);
+            second.setBlock(0, 0, 0, 9, 0, true, 2);
+            assertEquals(0, ChunkCaptureUtil.capture(second, sink, new ISlotReader() {
+                @Override
+                public int read(int x, int y, int z) {
+                    return SectionMath.encodeSlot(5, 0, false);
+                }
+            }));
+
+            //No UNDO record exists for the slot: undo never restores the
+            //intermediate 5 (the safer failure mode is a missing entry).
+            //The re-flush only left a redo-only rewrite segment, which the
+            //backward replay skips.
+            assertEquals(0, log.getCaptureCount());
+            assertEquals(1, log.getSegmentCount());
+            assertTrue(log.isSegmentRedoOnly(0));
+
+            final int[] replayed = new int[]{0};
+            log.replayBackward(new ColumnarUndoLog.IUndoVisitor() {
+                @Override
+                public void change(int x, int y, int z, int oldId, int oldData,
+                        int newId, int newData) {
+                    replayed[0]++;
+                }
+            });
+            assertEquals("undo must not touch the miss-marked slot", 0, replayed[0]);
+        } finally {
+            log.close();
+            spool.delete();
+        }
     }
 
     @Test

@@ -84,6 +84,18 @@ public interface ICaptureSink {
     void capture(int slotIndex, int oldId, int oldData, int newId, int newData);
 
     /**
+     * The old value of a pending slot of the open section could not be
+     * read (raw and world read both failed): the slot is dropped from the
+     * undo record entirely, and it must be MARKED as captured so a later
+     * re-flush of the section cannot record the job's own intermediate
+     * value as its "old" value - a missing undo entry is a safer failure
+     * than a wrong one.
+     *
+     * @param slotIndex slot in the section (0..4095)
+     */
+    void markMissing(int slotIndex);
+
+    /**
      * Close the capture bracket of the section flush
      */
     void endSection();

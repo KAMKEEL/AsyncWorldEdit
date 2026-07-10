@@ -383,6 +383,24 @@ public final class ColumnarUndoLog {
     }
 
     /**
+     * Mark a slot of the open section captured WITHOUT recording anything
+     * (its old value could not be read): the slot is dropped from the
+     * undo record, and the mark keeps a later re-flush of the section
+     * from capturing the job's own intermediate value as "old" - a
+     * missing undo entry is a safer failure than a wrong one. A slot that
+     * was already captured is left untouched (its first capture stands;
+     * the unreadable re-flush is dropped from the redo record too).
+     *
+     * @param slotIndex slot in the section (0..4095)
+     */
+    public void markCaptured(int slotIndex) {
+        if (m_open == null) {
+            throw new IllegalStateException("no section capture is open");
+        }
+        m_openBits[slotIndex >> 6] |= 1L << (slotIndex & 63);
+    }
+
+    /**
      * Append a re-captured slot to the open section's redo-only rewrite
      * runs (same RLE encoding as the normal runs)
      */
