@@ -12,9 +12,16 @@ awe:
     #   falls back to classic automatically.
     # classic = per block placement (the previous/direct-chunk pipeline)
     mode: buffered
-    #per job undo log memory budget (MB) before it spools to a temp file
-    #(reserved for the packed per job undo log; the current build records undo
-    #through WorldEdit's operation time change set)
+    #undo capture for buffered plain blocks:
+    # columnar = old values are captured at flush time into a packed per job
+    #   delta stream (RLE compressed, spooled to disk above the threshold
+    #   below); tiles/NBT and classic-path blocks keep the full object change
+    #   set. Lowest memory, the same //undo///redo commands.
+    # changeset = record every block through WorldEdit's operation time
+    #   change set (the previous behavior, full NBT fidelity)
+    undo-mode: columnar
+    #per job columnar undo log memory budget (MB) before it spools to a temp
+    #file in the undo folder
     undo-spool-threshold-mb: 8
     #verbose engine logging: per placer run + per job completion stats
     debug: false

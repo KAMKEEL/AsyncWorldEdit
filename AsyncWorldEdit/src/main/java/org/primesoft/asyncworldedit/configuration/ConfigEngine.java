@@ -62,6 +62,11 @@ public class ConfigEngine {
     public static final int DEFAULT_UNDO_SPOOL_THRESHOLD_MB = 8;
 
     /**
+     * Default undo capture mode for buffered blocks (columnar when true)
+     */
+    public static final boolean DEFAULT_COLUMNAR_UNDO = true;
+
+    /**
      * Default for the region streamed flushing toggle
      */
     public static final boolean DEFAULT_STREAM_ENABLED = true;
@@ -79,6 +84,8 @@ public class ConfigEngine {
     private final EngineMode m_mode;
 
     private final int m_undoSpoolThresholdMb;
+
+    private final boolean m_columnarUndo;
 
     private final boolean m_debug;
 
@@ -104,11 +111,20 @@ public class ConfigEngine {
 
     /**
      * Per job undo log memory budget (MB) before it spools to a temp file.
-     * Reserved for the packed per job undo log; the current build relies on
-     * WorldEdit's operation time change set recording.
+     * Feeds the columnar undo log spool threshold.
      */
     public int getUndoSpoolThresholdMb() {
         return m_undoSpoolThresholdMb;
+    }
+
+    /**
+     * Undo capture mode for buffered plain blocks (awe.engine.undo-mode):
+     * true = columnar (packed delta stream captured at flush time),
+     * false = changeset (every block recorded through WorldEdit's
+     * operation time change set, the previous behavior)
+     */
+    public boolean isColumnarUndo() {
+        return m_columnarUndo;
     }
 
     /**
@@ -145,6 +161,7 @@ public class ConfigEngine {
         if (engineSection == null) {
             m_mode = EngineMode.BUFFERED;
             m_undoSpoolThresholdMb = DEFAULT_UNDO_SPOOL_THRESHOLD_MB;
+            m_columnarUndo = DEFAULT_COLUMNAR_UNDO;
             m_debug = false;
             m_streamEnabled = DEFAULT_STREAM_ENABLED;
             m_streamWindowSections = DEFAULT_STREAM_WINDOW_SECTIONS;
@@ -155,11 +172,21 @@ public class ConfigEngine {
         m_mode = EngineMode.parse(engineSection.getString("mode", "buffered"));
         m_undoSpoolThresholdMb = Math.max(1,
                 engineSection.getInt("undo-spool-threshold-mb", DEFAULT_UNDO_SPOOL_THRESHOLD_MB));
+        m_columnarUndo = parseUndoMode(engineSection.getString("undo-mode", "columnar"));
         m_debug = engineSection.getBoolean("debug", false);
         m_streamEnabled = engineSection.getBoolean("stream.enabled", DEFAULT_STREAM_ENABLED);
         m_streamWindowSections = Math.max(1,
                 engineSection.getInt("stream.window-sections", DEFAULT_STREAM_WINDOW_SECTIONS));
         m_streamStaleRuns = Math.max(1,
                 engineSection.getInt("stream.stale-runs", DEFAULT_STREAM_STALE_RUNS));
+    }
+
+    /**
+     * Parse the undo-mode value: "changeset" selects the operation time
+     * change set recording, everything else (incl. unknown values) the
+     * columnar default
+     */
+    private static boolean parseUndoMode(String value) {
+        return value == null || !"changeset".equalsIgnoreCase(value.trim());
     }
 }
