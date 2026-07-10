@@ -265,7 +265,41 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
   a second pass should attack: cancel during backpressure wait,
   fill-then-classic-write clearPending interplay, undo of a
   backpressured multi-wave job, session logout mid-compile)
-- [ ] Wave 2: conditional fills + //replace + tests
+- [x] Wave 2: conditional fills + //replace (commit 21b23b7). DESIGN
+  DEVIATION, deliberate: conditionals are NOT evaluated inside the
+  apply loops - flushJobChunk RESOLVES them first (PendingChunk
+  .resolveConditionals against the same rawReader-with-world-fallback
+  the capture uses; this is the spec's "resolve against readRaw"
+  option generalized to every path). Rationale: apply-loop evaluation
+  would have corrupted tile invalidation (removeStaleTileEntities runs
+  AFTER apply and reads getPendingSlotLocal - it would either
+  invalidate live tiles at non-matching positions or miss overwritten
+  ones) and needed special cases in capture, classic replay and the
+  compact-section overflow path. After resolution the chunk holds only
+  ordinary slots, so capture/replay/tiles/overflow are correct
+  UNCHANGED, including the sub-threshold classic replay (resolution
+  happens before the threshold decision, so replay never sees a
+  conditional slot - the spec's replay question is moot). Slot storage:
+  per-section condition (matchId, matchData -1=wildcard) + lazy
+  512-byte bitset; ONE condition per section enforced (one op per job;
+  a conflict returns -2 from replaceChunkBox = abort-to-per-block,
+  distinct from -1 budget backpressure; the precheck stores nothing on
+  refusal). Produce-time semantics: conditional over an earlier
+  unconditional pending value resolves immediately against that value
+  (matches the per block lane's overlay read); unconditional overwrite
+  or clear drops the condition. overlayGet of a conditional slot
+  returns EMPTY_SLOT (pinned in JobBufferReplaceTest) - so the
+  changeset extent's old-read for a classic write over a conditional
+  position correctly reads the WORLD. Seam: replaceBlocks(Region,
+  Set, BaseBlock|SingleBlockPattern) via tryFillFast(FILL_REPLACE),
+  eligibility adds: exactly one filter block, id 0..0xFFFF, data
+  -1..15 (WE equalsFuzzy semantics verified in the WE 6.1.9 jar).
+  DOCUMENTED LIMITATION: the fast //replace returns the QUEUED region
+  count, not the matched count (matches only known at flush); WE's
+  "blocks changed" message overstates; undo exact. Tests:
+  PendingChunkConditionalTest (8), JobBufferReplaceTest (3),
+  ChunkBatchWriterReplaceTest (2, end-to-end flush: only matches
+  written, capture sink never sees non-matches). Suite: 226 green.
 - [ ] Wave 3: clipboard solids + tests
 - [ ] Wave 4: section-level undo replay + tests
 - [ ] Wave 5: telemetry (lane= tag), awe.engine.fast-lane master
@@ -278,5 +312,5 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
   are engine.mode: classic or any eligibility condition (e.g. a
   session mask) - and //undo always has undo-mode: changeset.
 
-Suite count when this log was last updated: 213 green (mvn clean
-package also green; Desktop jar refreshed at commit c07f81a).
+Suite count when this log was last updated: 226 green (Desktop jar
+last refreshed at commit c07f81a; refresh again at wave 5 final).
