@@ -57,6 +57,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import static org.primesoft.asyncworldedit.LoggerProvider.log;
 import org.primesoft.asyncworldedit.chunkbatch.SectionMath;
 
 /**
@@ -655,6 +656,22 @@ public final class ColumnarUndoLog {
     }
 
     /**
+     * Number of sections holding a first-capture bitset (memory telemetry
+     * + tests; {@link #seal} drops them all)
+     */
+    public int getTrackedSectionCount() {
+        int count = 0;
+        for (long[][] sections : m_captured.values()) {
+            for (long[] bits : sections) {
+                if (bits != null) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
      * The write-sequence range [firstSeq, lastSeq] of a segment (composite
      * merge key)
      *
@@ -724,12 +741,36 @@ public final class ColumnarUndoLog {
     /**
      * Seal the log: the owning job finished, no further capture is
      * accepted (a late {@link #beginSection} throws - a stale capture
-     * path must fail loudly, not append to a finished job's history).
-     * Replay and the segment cursor API stay fully available; a redo can
-     * still stream every segment. Idempotent.
+     * path must fail loudly, not append to a finished job's history) and
+     * the memory only captures needed is released: the first-capture
+     * bitsets are dropped (dead weight once no re-flush can happen) and
+     * the in-memory segments are force-spilled to the spool file, so a
+     * closed job's history holds only the segment directory + the file
+     * handle instead of up to spool-threshold megabytes of runs - with
+     * historySize sessions retained per player that difference is the
+     * whole memory story. Replay and the segment cursor API stay fully
+     * available; a redo can still stream every segment. Idempotent.
      */
     public void seal() {
+        if (m_sealed || m_closed) {
+            return;
+        }
         m_sealed = true;
+
+        //512 bytes per touched section, only needed while re-flushes of
+        //the running job must be rejected
+        m_captured.clear();
+
+        if (m_memoryBytes > 0) {
+            try {
+                spill();
+            } catch (IOException ex) {
+                //Correctness over memory: keep the in-memory runs, replay
+                //still works from them
+                log("Error while spilling a finished columnar undo log to"
+                        + " disk (its runs stay in memory): " + ex);
+            }
+        }
     }
 
     /**

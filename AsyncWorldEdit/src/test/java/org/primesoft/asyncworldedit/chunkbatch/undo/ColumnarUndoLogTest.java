@@ -413,6 +413,59 @@ public class ColumnarUndoLogTest {
     }
 
     @Test
+    public void sealDropsTheBitsetsSpillsTheRunsAndKeepsReplayExact() throws Exception {
+        //High threshold: everything stays in memory until the seal
+        ColumnarUndoLog log = log(Long.MAX_VALUE);
+
+        log.beginSection(0, 0, 0, 0, 1);
+        log.capture(0, 1, 0, 7, 0);
+        log.capture(1, 1, 0, 7, 0);
+        log.endSection();
+        log.beginSection(0, 0, 1, 2, 3);
+        log.capture(0, 3, 2, 7, 0);
+        log.endSection();
+
+        assertTrue(log.getMemoryBytes() > 0);
+        assertEquals(2, log.getTrackedSectionCount());
+        assertFalse(log.isSpooled());
+
+        //Job end (ColumnarUndoRegistry.unregister -> sink.jobDone)
+        log.seal();
+        assertTrue(log.isSealed());
+        assertEquals("the first-capture bitsets are dead weight after the"
+                + " job", 0, log.getTrackedSectionCount());
+        assertEquals("the runs must have spilled to disk", 0, log.getMemoryBytes());
+        assertTrue(log.isSpooled());
+        assertTrue(m_spool.exists());
+
+        //A late capture attempt fails loudly
+        try {
+            log.beginSection(0, 0, 2, 4, 5);
+            fail("a sealed log must refuse captures");
+        } catch (IllegalStateException ex) {
+            //Expected
+        }
+
+        //Replay still exact from the spooled-only state, both directions
+        Recorder backward = new Recorder();
+        log.replayBackward(backward);
+        assertEquals(3, backward.changes.size());
+        assertEquals("0,16,0:3:2>7:0", backward.changes.get(0));
+        assertEquals("1,0,0:1:0>7:0", backward.changes.get(1));
+        assertEquals("0,0,0:1:0>7:0", backward.changes.get(2));
+
+        Recorder forward = new Recorder();
+        log.replayForward(forward);
+        assertEquals(3, forward.changes.size());
+        assertEquals("0,0,0:1:0>7:0", forward.changes.get(0));
+
+        //Idempotent, and close still deletes the spool
+        log.seal();
+        log.close();
+        assertFalse(m_spool.exists());
+    }
+
+    @Test
     public void closeDeletesTheSpoolFileAndRefusesFurtherCaptures() throws Exception {
         ColumnarUndoLog log = log(0);
 

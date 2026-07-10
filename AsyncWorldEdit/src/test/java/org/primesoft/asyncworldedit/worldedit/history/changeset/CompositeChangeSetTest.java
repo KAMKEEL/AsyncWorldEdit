@@ -379,6 +379,34 @@ public class CompositeChangeSetTest {
     }
 
     @Test
+    public void undoAndRedoStillWorkAfterTheJobEndSeal() throws Exception {
+        //Job end: ColumnarUndoRegistry.unregister -> sink.jobDone seals
+        //the log (bitsets dropped, runs force-spilled). The history must
+        //replay exactly from the spooled-only state in both directions.
+        final ColumnarUndoSink sink = sink(Long.MAX_VALUE);
+        sink.beginSection(0, 0, 0, 0, 2);
+        sink.capture(0, 1, 0, 9, 0);
+        sink.capture(1, 1, 0, 9, 0);
+        sink.endSection();
+        m_composite.attach(sink);
+
+        assertTrue(sink.getLog().getMemoryBytes() > 0);
+        sink.jobDone();
+        assertTrue(sink.getLog().isSealed());
+        assertEquals(0, sink.getLog().getMemoryBytes());
+        assertEquals(0, sink.getLog().getTrackedSectionCount());
+
+        final List<String> backward = drain(m_composite.backwardIterator());
+        assertEquals(2, backward.size());
+        assertEquals("1,0,0:1:0>9:0", backward.get(0));
+        assertEquals("0,0,0:1:0>9:0", backward.get(1));
+
+        final List<String> forward = drain(m_composite.forwardIterator());
+        assertEquals(2, forward.size());
+        assertEquals("0,0,0:1:0>9:0", forward.get(0));
+    }
+
+    @Test
     public void sizeIsObjectSizePlusCaptureCounts() throws Exception {
         buildTwoLogsAndTwoObjectChanges();
         assertEquals(5, m_composite.size());
