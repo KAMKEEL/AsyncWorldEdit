@@ -463,6 +463,42 @@ public class JobBufferRegistryTest {
     }
 
     @Test
+    public void looseJobIdWritesFlushWithoutACaptureSinkEvenWithARegisteredJob() throws Exception {
+        //Pin of the MultiStageReorder destroy-first protection: an
+        //unwrapped-block write extracts job id -1 (AsyncWorld keys the
+        //buffer by the BLOCK wrapper's job id only), so it lands in a
+        //loose buffer whose flush must carry NO capture sink - even while
+        //the same player has a sink registered for a real job. If a loose
+        //write were ever captured, the reorder stage's internal air
+        //double-write would enter the redo record.
+        final JobBufferRegistry reg = new JobBufferRegistry();
+        final IWorld world = aweWorld("world");
+        final UUID uuid = new UUID(13, 13);
+        final IPlayerEntry p = player(uuid);
+
+        final FakeCaptureSink capture = new FakeCaptureSink();
+        try {
+            assertTrue(ColumnarUndoRegistry.register(uuid, 1, capture, new Object()));
+            assertNull("loose ids never resolve a sink",
+                    ColumnarUndoRegistry.get(uuid, -1));
+
+            //The loose write (job id -1, no IJobEntry)
+            assertTrue(reg.buffer(p, -1, weWorld(), world, null,
+                    0, 64, 0, 0, 0, true));
+
+            final RecordingSink sink = new RecordingSink();
+            reg.drainRoundRobin(NO_LIMIT, sink, false);
+
+            assertEquals("the loose buffer flushes immediately",
+                    1, sink.flushedChunkSizes.size());
+            assertTrue("a loose flush must never carry a capture sink",
+                    sink.captureSinks.isEmpty());
+        } finally {
+            ColumnarUndoRegistry.unregister(uuid, 1);
+        }
+    }
+
+    @Test
     public void producerDrainSmokeNoLostWritesAndMonotonicSequence() throws Exception {
         final JobBufferRegistry reg = new JobBufferRegistry();
         final IWorld world = aweWorld("world");

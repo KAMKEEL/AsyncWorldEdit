@@ -311,6 +311,19 @@ public class AsyncWorld extends AbstractWorldWrapper {
                 return false;
             }
 
+            //BUFFER KEYING - LOAD-BEARING: the buffer is keyed by the
+            //BLOCK wrapper's job id, on purpose and only ever by it.
+            //WorldEdit's MultiStageReorder commit emits destroy-first
+            //double writes (an internally constructed, UNWRAPPED air
+            //block ahead of the stored real block) downstream of the
+            //history extent; the unwrapped block extracts job id -1, so
+            //the destroy write lands in a LOOSE buffer that the columnar
+            //registry never resolves (loose ids are never registered) and
+            //is never captured. That is what keeps the double write out
+            //of the job's undo/redo record: if this keying ever consulted
+            //the vector wrapper as a fallback, the destroy write would be
+            //captured first and //redo would restore the intermediate air
+            //instead of the block.
             if (bufferBlock(player, paramBlock.getJobId(), v, newBlock, bln)) {
                 return true;
             }
