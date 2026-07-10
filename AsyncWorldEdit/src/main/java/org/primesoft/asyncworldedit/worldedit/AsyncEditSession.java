@@ -1087,7 +1087,12 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                 || !ConfigProvider.isBufferedEngine()
                 || getMask() != null
                 || getBlockChangeLimit() != -1
-                || ConfigProvider.blocksHub().getLogBlocks() != BHLevel.Disabled
+                || ConfigProvider.blocksHub().getLogBlocks() != BHLevel.Disabled) {
+            return -1;
+        }
+        //The probe touches Bukkit state: only from the main thread (a
+        //plugin calling the WE API from its own thread skips the fast lane)
+        if (!m_aweCore.getTaskDispatcher().isMainTask()
                 || !ChunkBatchWriter.getInstance().isDirectAvailable()) {
             return -1;
         }
@@ -1163,17 +1168,39 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                             @Override
                             public boolean visit(int cx, int cz, int x0, int y0,
                                     int z0, int x1, int y1, int z1) {
-                                if (session.isCanceled()) {
-                                    return false;
+                                //A section-budget refusal is BACKPRESSURE,
+                                //not failure: jobs larger than the budget
+                                //compile in waves while the main thread
+                                //drain streams sections out and frees
+                                //slots (live memory stays budget-bounded).
+                                //Only a drain that stops making progress
+                                //for a whole minute aborts to per block.
+                                long stalledSince = 0;
+                                for (;;) {
+                                    if (session.isCanceled()) {
+                                        return false;
+                                    }
+                                    final int r = registry.fillChunkBox(
+                                            m_player, jobId, weWorld, aweWorld,
+                                            job, x0, y0, z0, x1, y1, z1,
+                                            id, data, false);
+                                    if (r >= 0) {
+                                        written[0] += r;
+                                        return true;
+                                    }
+                                    final long now = System.currentTimeMillis();
+                                    if (stalledSince == 0) {
+                                        stalledSince = now;
+                                    } else if (now - stalledSince > 60000) {
+                                        return false;
+                                    }
+                                    try {
+                                        Thread.sleep(25);
+                                    } catch (InterruptedException ex) {
+                                        Thread.currentThread().interrupt();
+                                        return false;
+                                    }
                                 }
-                                final int r = registry.fillChunkBox(m_player, jobId,
-                                        weWorld, aweWorld, job,
-                                        x0, y0, z0, x1, y1, z1, id, data, false);
-                                if (r < 0) {
-                                    return false;
-                                }
-                                written[0] += r;
-                                return true;
                             }
                         });
 
