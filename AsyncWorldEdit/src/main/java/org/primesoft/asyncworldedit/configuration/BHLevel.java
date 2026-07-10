@@ -53,18 +53,16 @@ package org.primesoft.asyncworldedit.configuration;
  */
 public enum BHLevel {
     /**
-     * No block operations are ging to 
+     * No block operations are ging to
      * be forwarded to BlocksHub
      */
     Disabled,
     /**
-     * Only regular block operations 
-     * are going to be forwarded to BlocksHub
+     * Block operations are going to be forwarded to BlocksHub.
+     *
+     * (The former All level - forward even premium DirectChunkAPI writes -
+     * died with that subsystem: without the dc discriminator Regular and
+     * All were indistinguishable.)
      */
-    Regular,
-    /**
-     * All block operation are going
-     * to be forwarded to BlocksHub
-     */
-    All
+    Regular
 }

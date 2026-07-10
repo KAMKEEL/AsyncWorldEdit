@@ -86,11 +86,10 @@ public class BlocksHubIntegration implements IBlocksHubIntegration {
      * @param oldBlockData
      * @param newBlockType
      * @param newBlockData
-     * @param dc
      */
     private void logBlock(IPlayerEntry playerEntry, IWorld world, Location location,
             int oldBlockType, byte oldBlockData,
-            int newBlockType, byte newBlockData, boolean  dc) {
+            int newBlockType, byte newBlockData) {
         World bWorld = getWorld(world);
         if (bWorld == null) {
             return;
@@ -107,11 +106,9 @@ public class BlocksHubIntegration implements IBlocksHubIntegration {
      * @param playerEntry
      * @param world
      * @param location
-     * @param dc
      * @return
-     */    
-    private boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Location location,
-            boolean  dc) {
+     */
+    private boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Location location) {
         World bWorld = getWorld(world);
         if (bWorld == null) {
             return false;
@@ -144,45 +141,24 @@ public class BlocksHubIntegration implements IBlocksHubIntegration {
     @Override
     public boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location,
             BaseBlock oldBlock, BaseBlock newBlock) {
-        return canPlace(playerEntry, world, location, oldBlock, newBlock, false);
-    }
-    
-    /**
-     * Check if the block can be changed
-     *
-     * @param playerEntry
-     * @param world
-     * @param location
-     * @param dc
-     * @return
-     */
-    @Override
-    public boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location,
-            BaseBlock oldBlock, BaseBlock newBlock,
-            boolean  dc) {
-        return hasAccess(playerEntry, world, location, dc);
+        return hasAccess(playerEntry, world, location);
     }
 
     @Override
     public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location) {
-        return hasAccess(playerEntry, world, location, false);
-    }
-
-    @Override
-    public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location, boolean dc) {
         if (location == null) {
             return false;
         }
-        
+
         World bWorld = getWorld(world);
         if (bWorld == null) {
             return false;
         }
-        
+
         Location l = new Location(bWorld, location.getX(), location.getY(), location.getZ());
 
         try {
-            return hasAccess(playerEntry, world, l, dc);
+            return hasAccess(playerEntry, world, l);
 
         } catch (Exception ex) {
             String name = playerEntry.getName();
@@ -206,11 +182,10 @@ public class BlocksHubIntegration implements IBlocksHubIntegration {
      * @param location
      * @param oldBlock
      * @param newBlock
-     * @param dc
      */
     @Override
     public void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location,
-            BaseBlock oldBlock, BaseBlock newBlock, boolean  dc) {
+            BaseBlock oldBlock, BaseBlock newBlock) {
         if (location == null) {
             return;
         }
@@ -230,7 +205,7 @@ public class BlocksHubIntegration implements IBlocksHubIntegration {
         Location l = new Location(bWorld, location.getX(), location.getY(), location.getZ());
         try {
             logBlock(playerEntry, world, l, oldBlock.getType(), (byte) oldBlock.getData(),
-                    newBlock.getType(), (byte) newBlock.getData(), dc);
+                    newBlock.getType(), (byte) newBlock.getData());
         } catch (Exception ex) {
             String name = playerEntry.getName();
 

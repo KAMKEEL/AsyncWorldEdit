@@ -88,25 +88,6 @@ public class BlocksHubIntegrationV2 implements IBlocksHubIntegration {
     @Override
     public boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location,
             BaseBlock oldBlock, BaseBlock newBlock) {
-        return canPlace(playerEntry, world, location,
-                oldBlock, newBlock, false);
-    }
-
-    /**
-     * Check if the block can be changed
-     *
-     * @param playerEntry
-     * @param world
-     * @param location
-     * @param dc
-     * @param oldBlock
-     * @param newBlock
-     * @return
-     */
-    @Override
-    public boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location,
-            BaseBlock oldBlock, BaseBlock newBlock,
-            boolean dc) {
         if (location == null || world == null) {
             return false;
         }
@@ -142,11 +123,10 @@ public class BlocksHubIntegrationV2 implements IBlocksHubIntegration {
      * @param location
      * @param oldBlock
      * @param newBlock
-     * @param dc
      */
     @Override
     public void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location,
-            BaseBlock oldBlock, BaseBlock newBlock, boolean dc) {
+            BaseBlock oldBlock, BaseBlock newBlock) {
         if (location == null || world == null) {
             return;
         }
@@ -179,11 +159,6 @@ public class BlocksHubIntegrationV2 implements IBlocksHubIntegration {
 
     @Override
     public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location) {
-        return hasAccess(playerEntry, world, location, false);
-    }
-
-    @Override
-    public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location, boolean dc) {
         if (location == null || world == null) {
             return false;
         }

@@ -60,7 +60,7 @@ import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 public class NullBlocksHubIntegration implements IBlocksHubIntegration {
 
     @Override
-    public void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock, boolean dc) {        
+    public void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock) {
     }
 
     @Override
@@ -69,17 +69,7 @@ public class NullBlocksHubIntegration implements IBlocksHubIntegration {
     }
 
     @Override
-    public boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock, boolean dc) {
-        return true;
-    }
-
-    @Override
     public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location) {
-        return true;
-    }
-
-    @Override
-    public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location, boolean dc) {
         return true;
     }
 }

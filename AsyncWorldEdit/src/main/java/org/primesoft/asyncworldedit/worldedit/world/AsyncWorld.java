@@ -1268,7 +1268,7 @@ public class AsyncWorld extends AbstractWorldWrapper {
      * Log placed block using blocks hub
      */
     private void logBlock(Vector location, IPlayerEntry player, BaseBlock oldBlock, BaseBlock newBlock) {
-        m_blocksHub.logBlock(player, m_bukkitWorld, location, oldBlock, newBlock, false);
+        m_blocksHub.logBlock(player, m_bukkitWorld, location, oldBlock, newBlock);
     }
 
     /**

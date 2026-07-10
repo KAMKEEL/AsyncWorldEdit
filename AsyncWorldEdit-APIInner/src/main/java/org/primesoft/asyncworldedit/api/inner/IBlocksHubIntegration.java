@@ -56,19 +56,6 @@ public interface IBlocksHubIntegration {
     boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location);
 
     /**
-     * Check if the player has access
-     *
-     * @param playerEntry
-     * @param world
-     * @param location
-     * @param dc
-     * @return
-     */
-    boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location,
-            boolean dc);    
-    
-    
-    /**
      * Check if the block can be changed
      *
      * @param playerEntry
@@ -82,20 +69,6 @@ public interface IBlocksHubIntegration {
             BaseBlock oldBlock, BaseBlock newBlock);
 
     /**
-     * Check if the block can be changed
-     *
-     * @param playerEntry
-     * @param world
-     * @param location
-     * @param oldBlock
-     * @param newBlock
-     * @param dc
-     * @return
-     */
-    boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location, 
-            BaseBlock oldBlock, BaseBlock newBlock, boolean dc);
-
-    /**
      * Log block change using BlocksHub
      *
      * @param playerEntry
@@ -103,7 +76,6 @@ public interface IBlocksHubIntegration {
      * @param location
      * @param oldBlock
      * @param newBlock
-     * @param dc
      */
-    void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock, boolean dc);
+    void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock);
 }

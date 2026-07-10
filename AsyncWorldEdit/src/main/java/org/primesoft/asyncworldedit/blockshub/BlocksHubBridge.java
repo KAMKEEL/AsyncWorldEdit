@@ -99,9 +99,9 @@ public class BlocksHubBridge implements IBlocksHubBridge {
     }
 
     @Override
-    public void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock, boolean dc) {
+    public void logBlock(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock) {
         BHLevel level = ConfigProvider.blocksHub().getLogBlocks();
-        if (level == BHLevel.Disabled || (dc && level == BHLevel.Regular)) {
+        if (level == BHLevel.Disabled) {
             return;
         }
 
@@ -112,7 +112,7 @@ public class BlocksHubBridge implements IBlocksHubBridge {
             return;
         }
 
-        m_integrator.logBlock(playerEntry, world, location, oldBlock, newBlock, dc);
+        m_integrator.logBlock(playerEntry, world, location, oldBlock, newBlock);
     }
 
     @Override
@@ -158,40 +158,6 @@ public class BlocksHubBridge implements IBlocksHubBridge {
         }
 
         return m_integrator.hasAccess(playerEntry, world, location);
-    }
-
-    @Override
-    public boolean hasAccess(IPlayerEntry playerEntry, IWorld world, Vector location, boolean dc) {
-        ConfigBlocksHub bhConfig = ConfigProvider.blocksHub();
-
-        BHLevel level = bhConfig.getCheckAccess();
-        if (level == BHLevel.Disabled || (dc && level == BHLevel.Regular)) {
-            return true;
-        }
-
-        if (playerEntry == null) {
-            return bhConfig.isAccessAllowed(AccessType.Null);
-        }
-
-        boolean isUnknown = playerEntry.isUnknown()
-                || playerEntry.getName() == null || playerEntry.getName().isEmpty()
-                || playerEntry.getUUID() == null || !playerEntry.isPlayer();
-
-        boolean isConsole = playerEntry.isConsole();
-        boolean isOffline = playerEntry.isPlayer() && playerEntry.isDisposed();
-
-        if (isUnknown) {
-            return bhConfig.isAccessAllowed(AccessType.Unknown);
-        }
-        if (isConsole) {
-            return bhConfig.isAccessAllowed(AccessType.Console);
-        }
-
-        if (isOffline) {
-            return bhConfig.isAccessAllowed(AccessType.Offline);
-        }
-
-        return m_integrator.hasAccess(playerEntry, world, location, dc);
     }
 
     /**
@@ -296,48 +262,6 @@ public class BlocksHubBridge implements IBlocksHubBridge {
         }
 
         return m_integrator.canPlace(playerEntry, world, location, oldBlock, newBlock);
-    }
-
-    @Override
-    public boolean canPlace(IPlayerEntry playerEntry, IWorld world, Vector location, BaseBlock oldBlock, BaseBlock newBlock, boolean dc) {
-        if (!canPlace(playerEntry, newBlock)) {
-            return false;
-        }
-        
-        if (playerEntry != null && playerEntry.isAllowed(Permission.BYPASS_BLOCKS_HUB)) {
-            return true;
-        }
-
-        ConfigBlocksHub bhConfig = ConfigProvider.blocksHub();
-
-        BHLevel level = bhConfig.getCheckAccess();
-        if (level == BHLevel.Disabled || (dc && level == BHLevel.Regular)) {
-            return true;
-        }
-
-        if (playerEntry == null) {
-            return bhConfig.isAccessAllowed(AccessType.Null);
-        }
-
-        boolean isUnknown = playerEntry.isUnknown()
-                || playerEntry.getName() == null || playerEntry.getName().isEmpty()
-                || playerEntry.getUUID() == null || !playerEntry.isPlayer();
-
-        boolean isConsole = playerEntry.isConsole();
-        boolean isOffline = playerEntry.isPlayer() && playerEntry.isDisposed();
-
-        if (isUnknown) {
-            return bhConfig.isAccessAllowed(AccessType.Unknown);
-        }
-        if (isConsole) {
-            return bhConfig.isAccessAllowed(AccessType.Console);
-        }
-
-        if (isOffline) {
-            return bhConfig.isAccessAllowed(AccessType.Offline);
-        }
-
-        return m_integrator.canPlace(playerEntry, world, location, oldBlock, newBlock, dc);
     }
 
     @Override

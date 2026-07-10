@@ -100,36 +100,23 @@ public class ConfigBlocksHub {
             return;
         }
 
+        //The historical isDcEnabled keys (log + access) selected the All
+        //level for the premium DirectChunkAPI; they died with that
+        //subsystem and are ignored if still present in an old config.
         IConfigurationSection logSection = bhSection.getConfigurationSection("log");
         if (logSection == null) {
             m_logBlocks = BHLevel.Regular;
         } else {
-            boolean isEnabled = logSection.getBoolean("isEnabled", true);
-            boolean isDcEnabled = logSection.getBoolean("isDcEnabled", false);
-
-            if (!isEnabled) {
-                m_logBlocks = BHLevel.Disabled;
-            } else if (!isDcEnabled) {
-                m_logBlocks = BHLevel.Regular;
-            } else {
-                m_logBlocks = BHLevel.All;
-            }
+            m_logBlocks = logSection.getBoolean("isEnabled", true)
+                    ? BHLevel.Regular : BHLevel.Disabled;
         }
 
         IConfigurationSection accessSection = bhSection.getConfigurationSection("access");
         if (accessSection == null) {
             m_checkAccess = BHLevel.Disabled;
         } else {
-            boolean isEnabled = accessSection.getBoolean("isEnabled", true);
-            boolean isDcEnabled = accessSection.getBoolean("isDcEnabled", false);
-
-            if (!isEnabled) {
-                m_checkAccess = BHLevel.Disabled;
-            } else if (!isDcEnabled) {
-                m_checkAccess = BHLevel.Regular;
-            } else {
-                m_checkAccess = BHLevel.All;
-            }
+            m_checkAccess = accessSection.getBoolean("isEnabled", true)
+                    ? BHLevel.Regular : BHLevel.Disabled;
 
             if (accessSection.getBoolean("allowNull", false)) {
                 m_accessOverride.add(AccessType.Null);
