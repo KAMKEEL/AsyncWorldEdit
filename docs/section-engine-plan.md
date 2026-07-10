@@ -1,0 +1,230 @@
+# Section Engine Plan (KAWE3)
+
+The full plan for the operation-level fast lane: WorldEdit operations
+compile to SECTION PROGRAMS instead of per-block streams. Target: legacy
+KAWE (FAWE-lineage) speed class - near-instant large edits - while
+keeping every KAWE2 guarantee: main-thread-only world mutation, columnar
+undo, bounded memory, cancel/progress/queue semantics, clean degradation.
+
+STATUS: see the EXECUTION LOG at the bottom. This document is the single
+source of truth for a successor session/model: read this file, the
+Phase 4 records in prime-engine-plan.md, and engine-architecture.md
+before touching code.
+
+## Why (measured motivation)
+
+- KAWE2 buffered engine, 3.55M-block //set in-game: 178,920 blocks/sec,
+  minTPS 19.3, budget-exceeded=0. The main-thread writer was IDLE - the
+  bottleneck is the per-block producer (WE region iterator + extent
+  chain + per-block calls), not the flush.
+- The same log shows the drain writing 399,000 blocks in 55ms of
+  main-thread time (~7M blocks/sec) through the existing NMS section
+  writer, including capture + tile invalidation + packets.
+- Conclusion: eliminate per-block iteration for compilable operations
+  and the wall time collapses from ~20s to seconds (drain-bound), with
+  the visual "whole region pours in over ~1-2s" effect.
+
+## Architecture (one paragraph)
+
+An eligible operation (e.g. cuboid //set with a constant block) is
+intercepted at the EditSession region-method seam BEFORE WorldEdit
+builds its per-block visitor. A compiler lowers it straight into the
+existing per-job PendingChunk/PendingSection buffers using bulk array
+fills (no Vector, no extent chain, no per-block calls - production
+becomes memory-bandwidth bound, tens of ms for millions of blocks).
+From there, EVERYTHING downstream is the already-shipped, already-tested
+KAWE2 machinery: JobBufferRegistry streaming drain under the adaptive
+tick budget, flush-time columnar undo capture, tile-entity invalidation,
+capped relight, one packet per chunk, cancel drops unflushed buffers,
+/awe telemetry. Ineligible operations fall through to the unchanged
+per-block pipeline. No new threads, no async world access, no new
+commit machinery: the fast lane is a new PRODUCER, not a new writer.
+
+Explicitly rejected: FAWE-style async chunk mutation (their speed source
+and their bug source). Rejected for wave 1-3: an async prepare/commit
+worker pool - measurement shows the producer-side compile is cheap
+enough to run on the job's existing async thread.
+
+## What already exists and is load-bearing (do not rebuild)
+
+| Piece | Where | Role in the fast lane |
+|---|---|---|
+| PendingChunk/PendingSection | chunkbatch | the compilation target |
+| JobBufferRegistry | chunkbatch | job buffers, streaming drain, budget, cancel |
+| ChunkBatchWriter.flushJobChunk | chunkbatch | NMS write + classic replay + capture hook |
+| NmsChunkWriter | chunkbatch.nms | layout-aware section writes, tile invalidation, readRaw |
+| ColumnarUndoLog/Registry/CompositeChangeSet | chunkbatch.undo | flush-time undo capture, RLE, spool |
+| ExtendedChangeSetExtent suppression seam | worldedit | reference for how a job registers its columnar log |
+| AdaptiveTickBudget + [ENGINE] telemetry | blockPlacer | pacing + measurement |
+| AsyncEditSession region-method overrides | worldedit/AsyncEditSession.java L960-1050 | the interception seam (currently pass-throughs) |
+
+## Waves (each = implement + tests + commit; suite green every commit)
+
+### Wave 0 - exploration + substrate (no behavior change)
+- E1: trace the LIVE call path of //set on this fork: WE 6.1.2
+  RegionCommands.set -> EditSession.setBlocks(Region, Pattern) ->
+  (internal RegionVisitor/Operations?) -> AsyncOperationProcessor async
+  wrapping -> which class's setBlocks actually executes on the async
+  thread (AsyncEditSession vs CancelabeEditSession vs base). The
+  interception must catch the call ON THE ASYNC PATH exactly once, and
+  must not double-fire when CancelabeEditSession delegates to the same
+  method. Document the finding HERE before coding the seam.
+- E2: confirm how a fast-lane job registers a ColumnarUndoLog with the
+  session's CompositeChangeSet outside the suppression seam (mirror
+  ExtendedChangeSetExtent's first-suppression registration; the sink
+  must be registered BEFORE the first buffer is created so the buffer
+  binds it at creation - see JobBufferRegistry.getOrCreate).
+- S1: PendingSection bulk-fill API: fillBox(x0,y0,z0,x1,y1,z1,id,data)
+  operating on the packed arrays with tight loops (full-section fill =
+  Arrays.fill), maintaining count/lastWriteSeq/budget accounting
+  identically to setBlock. Exact-value tests incl. edge boxes,
+  recount on overwrite, budget interaction.
+- S2: JobBufferRegistry entry point for bulk production:
+  fillChunkBox(player, jobId, worlds, job, chunk-local box, id, data)
+  that creates/locks the PendingChunk and delegates to S1 (same detach
+  re-check contract as buffer()). Section budget: bulk fills acquire
+  per new section exactly like single writes; budget-full -> the
+  compiler ABORTS the fast lane cleanly (see F4 fallback contract).
+
+### Wave 1 - cuboid fills: //set, //walls, //faces (constant block)
+- Eligibility (ALL must hold, else fall through to super):
+  - buffered engine active AND direct-chunk writer available (probe ok)
+  - operation is async for this player (checkAsync), player has no
+    session mask (getMask() == null on the session)
+  - region instanceof CuboidRegion (walls/faces: same, decomposed into
+    up to 6 cuboids by us)
+  - the pattern reduces to ONE constant BaseBlock (BaseBlock direct, or
+    Pattern that is a single-block pattern) with no NBT, batchable id
+    (BatchEligibility), not disallowed (blacklist blockSet rule)
+  - block-change limit is -1 (any positive limit -> per-block lane,
+    which enforces it exactly)
+  - BlocksHub logging: if log.isEnabled -> fall through (the per-block
+    lane logs each block; the fast lane cannot). Note in config docs.
+- Seam: AsyncEditSession.setBlocks(Region, BaseBlock) and
+  setBlocks(Region, Pattern) (+ makeCuboidWalls/makeCuboidFaces
+  decomposing to boxes), following the E1 finding. Job creation mirrors
+  the existing makeFaces override: getJobId(), JobEntry, addJob, one
+  AsyncTask whose task() runs the COMPILER instead of the WE visitor:
+  clip region to chunks, for each chunk fillChunkBox per section-box,
+  register the columnar log first (E2). Return value = slots written.
+- Undo: flush-time capture, unchanged. Changed-count vs written-count
+  documented (WE reports written; capture drops old==new slots from
+  undo exactly as today).
+- Tests: compiler geometry (region->chunk boxes->section boxes, edge
+  alignment, single-block regions), eligibility matrix (each condition
+  flips to fallback), undo capture of a bulk fill (uniform section ->
+  one RLE run), cancel mid-drain, budget-full abort fallback, walls/
+  faces decomposition exact boxes.
+
+### Wave 2 - conditional section ops: //replace (from->to constant)
+- New PendingSection op mode: CONDITIONAL fill (matchId/matchData
+  wildcard-able -> id/data), evaluated at FLUSH time against the live
+  arrays inside the existing apply loop (old value is already in hand
+  there for capture; a non-match writes nothing and captures nothing).
+- Compiler: replaceBlocks(region, Set<BaseBlock> filter(single),
+  replacement(single)) -> conditional fills. Same eligibility rules.
+- Buffer/overlay semantics: overlayGet for a conditional slot must
+  return EMPTY (unknowable until flush) - verify read-your-writes
+  interplay and document; //replace does not read its own writes in
+  WE 6, but pin with a test.
+- Tests: apply-loop conditional exact values on all three layouts,
+  capture only on matched slots, mixed conditional+unconditional
+  sections, undo/redo of a replace.
+
+### Wave 3 - clipboard solids: //paste (no NBT), //stack, //move solid
+- Compile clipboard/array sources into per-section slot arrays off the
+  job thread (reads come from the CLIPBOARD, not the world - thread
+  safe). NBT-bearing clipboard entries: fast-lane the plain blocks,
+  route tiles through the classic path in the SAME job (mirrors
+  existing eligibility split), preserving last-write order via the
+  existing write-sequence stamps.
+- //move: destination fill fast-laned; source-clear = unconditional
+  fill of air; ordering guaranteed by sequence stamps + tests.
+- Tests: offset/anchor math, mixed tile+plain interplay at same
+  positions, stack overlap (source/dest) with streaming evictions
+  (reuse the Phase 3 finding-1 scenario against the fast lane).
+
+### Wave 4 - section-level undo/redo replay
+- Undo of a fast-lane (or any columnar) job currently replays per-block
+  (~79k/s measured). Lower the RLE runs DIRECTLY into PendingSection
+  fills (a run is by construction a slot-interval + constant value):
+  //undo of a 3.5M //set becomes another fast-lane job. Redo mirrors
+  forward. The composite's object-changeset half still replays
+  per-block (tiles need it).
+- Tests: run->fill lowering exactness (incl. redo-only segments,
+  cross-flush rewrites), undo-of-cancelled partial jobs, interleaving
+  with object changes (order contract from Phase 3 preserved).
+
+### Wave 5 - polish + proof
+- [ENGINE] job line gains lane=fast|blocks|mixed.
+- /awe engine shows fast-lane availability + last-job lane.
+- config: awe.engine.fast-lane: true (master switch; false = wave-0
+  behavior everywhere, the ultimate fallback).
+- engine-architecture.md + config comments updated; benchmark runbook
+  extended with fast-lane rows; full-suite + clean package; Desktop
+  jar refresh.
+
+## Correctness contracts (every wave must keep these)
+
+1. World mutation on the main thread only, inside the existing drain.
+2. Undo exactness: first-capture-per-slot at flush; conditional ops
+   capture only what they change; written-vs-changed counts documented.
+3. Tile entities: overwritten tiles invalidated by the NMS writer
+   (already shipped); fast lane never PLACES NBT blocks.
+4. Cancel: unflushed buffers dropped, flushed blocks undoable - parity.
+5. Degradation: every eligibility miss falls through to the per-block
+   lane silently-correctly; one debug line states the reason (lane
+   decision visible under engine debug). F4: a budget-full mid-compile
+   DISCARDS the job's buffers and reruns the whole op per-block (never
+   half-fast) - the discard path exists (JobBufferRegistry.discard).
+6. No FAWE code copied - spec/reference only (repo policy).
+7. Full suite green on every commit; every fix lands with a regression
+   test; adversarial self-review before declaring a wave done (Phase 3
+   checklist style: reorder, replay, budget, cancel, session-lifecycle).
+
+## Risks
+
+| Risk | Mitigation |
+|---|---|
+| Double interception (AsyncEditSession + CancelabeEditSession both firing) | E1 explore-first; a per-job "compiled" latch; tests |
+| Mask/pattern variants silently eligible when they should not be | strict whitelist eligibility, matrix test |
+| Conditional-op overlay reads | wave 2 documented EMPTY semantics + test |
+| maxBlockChanged enforcement skipped | limit != -1 -> per-block lane |
+| BlocksHub logging bypassed | log.isEnabled -> per-block lane (documented) |
+| Sub-threshold classic replay of a bulk-filled chunk (probe failed later) | replay iterates slots - correct, just slow; test pins it |
+| Progress bars show 0 during compile | job counters fed from queuedBlocks as today (buffers count) |
+
+## Benchmark targets (same 3.55M //set, same server)
+
+| lane | expected wall | expected minTPS |
+|---|---|---|
+| per-block buffered (today) | ~20s | 19+ |
+| fast lane (wave 1) | 1-3s (drain+packets+relight bound) | 19+ |
+| //undo via wave 4 | 1-3s | 19+ |
+
+## EXECUTION LOG (keep current - successor sessions resume from here)
+
+Conventions: JAVA_HOME=C:\Program Files\Zulu\zulu-8; build:
+mvn -s C:\Users\Kamro\Coding\tools\awe-settings.xml test|package from
+repo root (mvn.cmd in C:\Users\Kamro\Coding\tools\apache-maven-3.9.9\bin).
+Branch KAWE2. Author KAMKEEL <28842281+KAMKEEL@users.noreply.github.com>.
+Plain commit messages, no AI attribution, do NOT push. Artifact:
+AsyncWorldEdit-Deploy\target\AsyncWorldEdit.jar -> copy over
+C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
+(never touch -kawe.jar). Suite was 191 green at plan time.
+
+- [ ] Wave 0: E1 call-path finding: (RECORD HERE)
+- [ ] Wave 0: E2 undo-registration finding: (RECORD HERE)
+- [ ] Wave 0: S1 PendingSection.fillBox + tests
+- [ ] Wave 0: S2 JobBufferRegistry.fillChunkBox + tests
+- [ ] Wave 1: compiler + //set seam + eligibility + tests
+- [ ] Wave 1: //walls + //faces decomposition + tests
+- [ ] Wave 1: adversarial self-review + fixes
+- [ ] Wave 2: conditional fills + //replace + tests
+- [ ] Wave 3: clipboard solids + tests
+- [ ] Wave 4: section-level undo replay + tests
+- [ ] Wave 5: telemetry/config/docs/benchmark rows + final package
+- In-game validation: ONE consolidated session at the end (per Kamron:
+  no midway gates): the benchmark runbook rows + fast-lane rows + undo
+  spot-checks. Fallback lever if anything misbehaves in production:
+  awe.engine.fast-lane: false.
