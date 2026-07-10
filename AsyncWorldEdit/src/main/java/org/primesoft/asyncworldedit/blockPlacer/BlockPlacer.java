@@ -79,6 +79,7 @@ import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
 import org.primesoft.asyncworldedit.chunkbatch.EngineStats;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
 import org.primesoft.asyncworldedit.configuration.ConfigEngine;
 import org.primesoft.asyncworldedit.configuration.ConfigMemory;
 import org.primesoft.asyncworldedit.configuration.ConfigRenderer;
@@ -1320,6 +1321,7 @@ public class BlockPlacer implements IBlockPlacer {
      * @param job
      */
     private void onJobRemoved(IJobEntry job) {
+        releaseOrphanedCaptureSink(job);
         logClassicJobDone(job);
 
         synchronized (m_jobAddedListeners) {
@@ -1329,6 +1331,28 @@ public class BlockPlacer implements IBlockPlacer {
         }
         
         AwePlatform.getInstance().getCore().getEventBus().post(new JobRemovedEvent(job));
+    }
+
+    /**
+     * A removed job whose sink never saw a buffer can never be flushed:
+     * unregister and seal its columnar capture sink right away. Without
+     * this a job that registered at first suppression but had every write
+     * refused by the buffer (or was canceled before producing) would leave
+     * its registration behind until the session dies - and job ids are
+     * reused (max(live)+1), so the NEXT job with the same id would bind the
+     * dead session's log and silently lose its own undo. A job WITH a live
+     * buffer is left to the buffer's prune/discard hook, which fires after
+     * the final flush that still needs the sink.
+     */
+    private void releaseOrphanedCaptureSink(IJobEntry job) {
+        if (job == null || job.getJobId() < 0) {
+            return;
+        }
+        final IPlayerEntry player = job.getPlayer();
+        final UUID uuid = player == null ? null : player.getUUID();
+        if (!JobBufferRegistry.getInstance().hasBuffer(uuid, job.getJobId())) {
+            ColumnarUndoRegistry.unregister(uuid, job.getJobId());
+        }
     }
 
     /**

@@ -318,7 +318,7 @@ public class CompositeChangeSetTest {
     public void closeUnregistersTheAttachedSinks() throws Exception {
         final UUID player = UUID.randomUUID();
         final ColumnarUndoSink sink = sink(Long.MAX_VALUE);
-        assertTrue(ColumnarUndoRegistry.register(player, 77, sink));
+        assertTrue(ColumnarUndoRegistry.register(player, 77, sink, new Object()));
         m_composite.attach(sink);
 
         assertSame(sink, ColumnarUndoRegistry.get(player, 77));

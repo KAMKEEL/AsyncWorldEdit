@@ -177,6 +177,17 @@ public class ColumnarUndoSink implements ICaptureSink {
         }
     }
 
+    @Override
+    public void jobDone() {
+        synchronized (m_log) {
+            //Seal the log: a late capture (e.g. a stale registration hit
+            //after the job id was reused) now fails loudly through
+            //markBroken instead of silently appending to this job's
+            //finished history. Replay (undo and redo) stays available.
+            m_log.seal();
+        }
+    }
+
     /**
      * Close the log: release its memory and delete the spool file.
      * Idempotent; called by the composite change set when the session is

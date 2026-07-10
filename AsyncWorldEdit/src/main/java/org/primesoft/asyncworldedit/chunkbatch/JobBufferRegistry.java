@@ -391,8 +391,24 @@ public final class JobBufferRegistry {
         }
 
         buf = new JobBuffer(player, jobId, aweWorld.getName(), weWorld, aweWorld, job);
+        //Bind the job's undo capture sink now: in columnar mode the
+        //producer registered it earlier in this very write's call stack
+        //(the suppression seam runs upstream of the buffer), so the
+        //binding is deterministic and a later reuse of the job id by
+        //another session cannot redirect this buffer's flush captures
+        buf.setCaptureSink(ColumnarUndoRegistry.get(uuid, jobId));
         JobBuffer prev = m_buffers.putIfAbsent(key, buf);
         return prev != null ? prev : buf;
+    }
+
+    /**
+     * True when a live buffer exists for a job. Used by the block placer
+     * to decide whether a removed job's capture sink can be unregistered
+     * immediately (no buffer = no flush will ever need it) or must wait
+     * for the buffer's prune hook.
+     */
+    public boolean hasBuffer(UUID uuid, int jobId) {
+        return m_buffers.containsKey(new Key(uuid, jobId));
     }
 
     /**
@@ -759,16 +775,28 @@ public final class JobBufferRegistry {
 
     /**
      * Flush one detached chunk and update the job counters + shared budget.
-     * The job's registered undo capture sink (columnar mode) rides along so
-     * the sink captures the pre-write old values; an unregistered job
-     * (changeset mode, undo off, loose writes, undo replays) flushes with a
-     * null sink at zero capture cost.
+     * The job's undo capture sink (columnar mode) rides along so the sink
+     * captures the pre-write old values; a job without one (changeset
+     * mode, undo off, loose writes, undo replays) flushes with a null sink
+     * at zero capture cost. The sink is the one BOUND to the buffer at its
+     * creation - never a bare live registry lookup, which a reused job id
+     * of a later session could redirect. The guarded registry fallback
+     * below only fills a binding that was null at creation (a mid-job
+     * switch into columnar mode) and only while the buffer's own job is
+     * still producing: id reuse requires the old job to be dead, so a
+     * still-live job's registry entry is necessarily its own.
      */
     private void flushChunk(JobBuffer buf, PendingChunk chunk, IFlushSink sink) {
         final int count = chunk.getCount();
         final int sections = chunk.getSectionCount();
         final UUID uuid = buf.getPlayer() == null ? null : buf.getPlayer().getUUID();
-        final ICaptureSink captureSink = ColumnarUndoRegistry.get(uuid, buf.getJobId());
+        ICaptureSink captureSink = buf.getCaptureSink();
+        if (captureSink == null && buf.getJob() != null && !isReady(buf)) {
+            captureSink = ColumnarUndoRegistry.get(uuid, buf.getJobId());
+            if (captureSink != null) {
+                buf.setCaptureSink(captureSink);
+            }
+        }
         try {
             sink.flush(buf.getWorld(), buf.getBukkitWorld(), chunk, captureSink);
         } catch (Throwable ex) {

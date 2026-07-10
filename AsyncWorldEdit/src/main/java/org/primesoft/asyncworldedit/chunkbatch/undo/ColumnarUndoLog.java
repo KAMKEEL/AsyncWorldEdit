@@ -274,6 +274,12 @@ public final class ColumnarUndoLog {
     private boolean m_closed;
 
     /**
+     * Sealed after {@link #seal} (the owning job finished): further
+     * captures refuse, replay stays available
+     */
+    private boolean m_sealed;
+
+    /**
      * @param spoolFile per job temp file for the spilled segments (created
      * lazily, deleted by {@link #close})
      * @param spoolThresholdBytes in-memory run bytes above which closed
@@ -300,9 +306,11 @@ public final class ColumnarUndoLog {
      * @param lastSeq highest write sequence of the flushed section
      */
     public void beginSection(int cx, int cz, int section, int firstSeq, int lastSeq) {
-        if (m_closed || m_open != null) {
+        if (m_closed || m_sealed || m_open != null) {
             throw new IllegalStateException(m_closed
-                    ? "the undo log is closed" : "a section capture is already open");
+                    ? "the undo log is closed" : (m_sealed
+                            ? "the undo log is sealed (its job finished)"
+                            : "a section capture is already open"));
         }
         m_open = new Segment(cx, cz, section, firstSeq, lastSeq, false);
         m_openRuns = new int[INTS_PER_RUN * 16];
@@ -693,6 +701,24 @@ public final class ColumnarUndoLog {
      */
     public int[] loadSegmentRuns(int index) throws IOException {
         return loadRuns(m_segments.get(index));
+    }
+
+    /**
+     * Seal the log: the owning job finished, no further capture is
+     * accepted (a late {@link #beginSection} throws - a stale capture
+     * path must fail loudly, not append to a finished job's history).
+     * Replay and the segment cursor API stay fully available; a redo can
+     * still stream every segment. Idempotent.
+     */
+    public void seal() {
+        m_sealed = true;
+    }
+
+    /**
+     * True once {@link #seal} ran (test seam)
+     */
+    public boolean isSealed() {
+        return m_sealed;
     }
 
     /**

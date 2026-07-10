@@ -104,4 +104,13 @@ public interface ICaptureSink {
      */
     void captureCleared(int x, int y, int z, int oldId, int oldData,
             int newId, int newData, int seq);
+
+    /**
+     * The owning job finished and its sink was unregistered: no further
+     * capture may be accepted (a late capture attempt - e.g. a stale
+     * registration hit after the job id was reused - must fail loudly
+     * instead of corrupting the sealed history) and held memory may be
+     * released. The captured history itself stays fully replayable.
+     */
+    void jobDone();
 }

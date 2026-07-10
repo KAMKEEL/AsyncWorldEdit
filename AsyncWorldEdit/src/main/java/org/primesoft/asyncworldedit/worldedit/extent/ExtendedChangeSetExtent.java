@@ -190,7 +190,12 @@ public class ExtendedChangeSetExtent extends ChangeSetExtent {
         final UUID uuid = player == null ? null : player.getUUID();
         final int jobId = wrapper.getJobId();
 
-        if (ColumnarUndoRegistry.get(uuid, jobId) != null) {
+        //Owner-bound resolution: only a sink registered by THIS session's
+        //composite is trusted. Job ids are reused (max(live)+1), so a hit
+        //left behind by a dead job of an earlier session is evicted and
+        //sealed by resolveOwned - without the check the new edit would
+        //capture into the old session's log and lose its own undo.
+        if (ColumnarUndoRegistry.resolveOwned(uuid, jobId, m_composite) != null) {
             return true;
         }
         return registerJobLog(uuid, jobId);
@@ -220,11 +225,12 @@ public class ExtendedChangeSetExtent extends ChangeSetExtent {
 
             final ColumnarUndoSink sink = new ColumnarUndoSink(
                     new ColumnarUndoLog(spool, thresholdBytes), m_changeSet);
-            if (!ColumnarUndoRegistry.register(uuid, jobId, sink)) {
+            if (!ColumnarUndoRegistry.register(uuid, jobId, sink, m_composite)) {
                 //Another thread of the same job won the registration race;
-                //nothing was written to this log yet
+                //nothing was written to this log yet. Only trust the hit
+                //when it belongs to this session's composite.
                 sink.close();
-                return ColumnarUndoRegistry.get(uuid, jobId) != null;
+                return ColumnarUndoRegistry.resolveOwned(uuid, jobId, m_composite) != null;
             }
             m_composite.attach(sink);
             return true;

@@ -54,16 +54,20 @@ import org.junit.Test;
 /**
  * Lifecycle tests for the (player, job) capture sink registry: first
  * registration wins, loose job ids are rejected, per job unregistration
- * and the sink-wide safety net sweep.
+ * (which seals the sink - job ids are reused), the owner-bound resolution
+ * that evicts stale entries of dead jobs, and the sink-wide safety net
+ * sweep.
  *
  * @author KAMKEEL
  */
 public class ColumnarUndoRegistryTest {
 
     /**
-     * No-op sink (only identity matters here)
+     * Recording sink: only identity and the jobDone (seal) signal matter
      */
     private static final class FakeSink implements ICaptureSink {
+
+        int jobDoneCalls;
 
         @Override
         public void beginSection(int cx, int cz, int section, int firstSeq, int lastSeq) {
@@ -81,7 +85,15 @@ public class ColumnarUndoRegistryTest {
         public void captureCleared(int x, int y, int z, int oldId, int oldData,
                 int newId, int newData, int seq) {
         }
+
+        @Override
+        public void jobDone() {
+            jobDoneCalls++;
+        }
     }
+
+    private final Object m_ownerA = new Object();
+    private final Object m_ownerB = new Object();
 
     @Test
     public void firstRegistrationWinsPerJob() {
@@ -89,9 +101,9 @@ public class ColumnarUndoRegistryTest {
         final FakeSink first = new FakeSink();
         final FakeSink second = new FakeSink();
         try {
-            assertTrue(ColumnarUndoRegistry.register(player, 1, first));
+            assertTrue(ColumnarUndoRegistry.register(player, 1, first, m_ownerA));
             assertFalse("a job has exactly one capture sink",
-                    ColumnarUndoRegistry.register(player, 1, second));
+                    ColumnarUndoRegistry.register(player, 1, second, m_ownerA));
             assertSame(first, ColumnarUndoRegistry.get(player, 1));
         } finally {
             ColumnarUndoRegistry.unregister(player, 1);
@@ -102,9 +114,10 @@ public class ColumnarUndoRegistryTest {
     @Test
     public void looseJobIdsAreNeverRegistered() {
         final UUID player = UUID.randomUUID();
-        assertFalse("job id -1 (undo replays, loose writes) must never"
-                + " capture", ColumnarUndoRegistry.register(player, -1, new FakeSink()));
+        assertFalse("job id -1 (undo replays, loose writes) must never capture",
+                ColumnarUndoRegistry.register(player, -1, new FakeSink(), m_ownerA));
         assertNull(ColumnarUndoRegistry.get(player, -1));
+        assertNull(ColumnarUndoRegistry.resolveOwned(player, -1, m_ownerA));
     }
 
     @Test
@@ -114,8 +127,8 @@ public class ColumnarUndoRegistryTest {
         final FakeSink aliceSink = new FakeSink();
         final FakeSink bobSink = new FakeSink();
         try {
-            assertTrue(ColumnarUndoRegistry.register(alice, 3, aliceSink));
-            assertTrue(ColumnarUndoRegistry.register(bob, 3, bobSink));
+            assertTrue(ColumnarUndoRegistry.register(alice, 3, aliceSink, m_ownerA));
+            assertTrue(ColumnarUndoRegistry.register(bob, 3, bobSink, m_ownerB));
             assertSame(aliceSink, ColumnarUndoRegistry.get(alice, 3));
             assertSame(bobSink, ColumnarUndoRegistry.get(bob, 3));
 
@@ -129,20 +142,77 @@ public class ColumnarUndoRegistryTest {
     }
 
     @Test
-    public void unregisterSinkSweepsEveryJobOfTheSink() {
+    public void unregisterSealsTheSink() {
+        final UUID player = UUID.randomUUID();
+        final FakeSink sink = new FakeSink();
+        assertTrue(ColumnarUndoRegistry.register(player, 2, sink, m_ownerA));
+
+        ColumnarUndoRegistry.unregister(player, 2);
+
+        assertEquals("job ids are reused: an unregistered sink must be"
+                + " sealed so a late capture cannot append to its history",
+                1, sink.jobDoneCalls);
+        //Idempotent: a second unregister finds nothing
+        ColumnarUndoRegistry.unregister(player, 2);
+        assertEquals(1, sink.jobDoneCalls);
+    }
+
+    @Test
+    public void resolveOwnedReturnsOnlyTheOwnersSink() {
+        final UUID player = UUID.randomUUID();
+        final FakeSink sink = new FakeSink();
+        try {
+            assertTrue(ColumnarUndoRegistry.register(player, 4, sink, m_ownerA));
+            assertSame(sink, ColumnarUndoRegistry.resolveOwned(player, 4, m_ownerA));
+        } finally {
+            ColumnarUndoRegistry.unregister(player, 4);
+        }
+    }
+
+    @Test
+    public void resolveOwnedEvictsAndSealsAForeignStaleEntry() {
+        //Job id reuse: session A's job 5 died without unregistering (it
+        //never created a buffer); session B's new job reuses id 5. B must
+        //NOT bind A's sink - the stale entry is evicted and sealed so B
+        //registers its own log.
+        final UUID player = UUID.randomUUID();
+        final FakeSink stale = new FakeSink();
+        final FakeSink fresh = new FakeSink();
+        try {
+            assertTrue(ColumnarUndoRegistry.register(player, 5, stale, m_ownerA));
+
+            assertNull("a foreign hit must not be trusted",
+                    ColumnarUndoRegistry.resolveOwned(player, 5, m_ownerB));
+            assertEquals("the stale sink must be sealed", 1, stale.jobDoneCalls);
+            assertNull("the stale entry must be gone",
+                    ColumnarUndoRegistry.get(player, 5));
+
+            assertTrue("the new owner now registers its own sink",
+                    ColumnarUndoRegistry.register(player, 5, fresh, m_ownerB));
+            assertSame(fresh, ColumnarUndoRegistry.resolveOwned(player, 5, m_ownerB));
+            assertEquals("the fresh sink stays unsealed", 0, fresh.jobDoneCalls);
+        } finally {
+            ColumnarUndoRegistry.unregister(player, 5);
+        }
+    }
+
+    @Test
+    public void unregisterSinkSweepsEveryJobOfTheSinkWithoutSealing() {
         final UUID player = UUID.randomUUID();
         final FakeSink shared = new FakeSink();
         final FakeSink other = new FakeSink();
         try {
-            assertTrue(ColumnarUndoRegistry.register(player, 10, shared));
-            assertTrue(ColumnarUndoRegistry.register(player, 11, shared));
-            assertTrue(ColumnarUndoRegistry.register(player, 12, other));
+            assertTrue(ColumnarUndoRegistry.register(player, 10, shared, m_ownerA));
+            assertTrue(ColumnarUndoRegistry.register(player, 11, shared, m_ownerA));
+            assertTrue(ColumnarUndoRegistry.register(player, 12, other, m_ownerB));
 
             ColumnarUndoRegistry.unregisterSink(shared);
             assertNull(ColumnarUndoRegistry.get(player, 10));
             assertNull(ColumnarUndoRegistry.get(player, 11));
             assertSame("the sweep must only touch the given sink",
                     other, ColumnarUndoRegistry.get(player, 12));
+            assertEquals("the session close path closes the sink itself",
+                    0, shared.jobDoneCalls);
         } finally {
             ColumnarUndoRegistry.unregister(player, 10);
             ColumnarUndoRegistry.unregister(player, 11);

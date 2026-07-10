@@ -54,7 +54,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Live capture sinks of the buffered jobs, keyed by (player uuid, job id).
+ * Live capture sinks of the buffered jobs, keyed by (player uuid, job id)
+ * and BOUND to the identity of the owning session's composite change set.
  *
  * A session's suppression tee registers its sink the first time it
  * suppresses the object recording of a job's write - BEFORE that write can
@@ -62,9 +63,21 @@ import java.util.concurrent.ConcurrentMap;
  * every capture-eligible buffered block. Loose writes (job id -1, e.g. the
  * //undo replay) are never registered and therefore never captured.
  *
+ * Ownership: job ids are reused (BlockPlacerPlayer.getNextJobId is
+ * max(live)+1), so a registration that outlived its job - a job that
+ * registered at first suppression but never created a buffer, leaving the
+ * prune hook nothing to fire on - would otherwise be found by the NEXT
+ * job with the same id and silently swallow the new edit's undo into the
+ * dead session's log. Every entry therefore carries its owner (the
+ * session's composite change set); {@link #resolveOwned} only trusts a
+ * hit with the caller's owner and evicts + seals a foreign (stale) one,
+ * and the block placer proactively unregisters a removed job's sink when
+ * no buffer exists for it.
+ *
  * Entries are removed when the job's buffer is pruned (job done, all
- * flushed or discarded) and, as a safety net, when the owning session's
- * change set is closed.
+ * flushed or discarded - the sink is sealed then), when the job is
+ * removed without ever having buffered, and, as a safety net, when the
+ * owning session's change set is closed.
  *
  * @author KAMKEEL
  */
@@ -102,59 +115,118 @@ public final class ColumnarUndoRegistry {
         }
     }
 
-    private static final ConcurrentMap<Key, ICaptureSink> s_sinks
-            = new ConcurrentHashMap<Key, ICaptureSink>();
+    /**
+     * A registered sink and the identity of its owning session's
+     * composite change set
+     */
+    private static final class Entry {
+
+        final ICaptureSink sink;
+        final Object owner;
+
+        Entry(ICaptureSink sink, Object owner) {
+            this.sink = sink;
+            this.owner = owner;
+        }
+    }
+
+    private static final ConcurrentMap<Key, Entry> s_sinks
+            = new ConcurrentHashMap<Key, Entry>();
 
     private ColumnarUndoRegistry() {
     }
 
     /**
-     * Register the capture sink of a job. First registration wins (all of
-     * a job's writes belong to one session).
+     * Register the capture sink of a job for an owner. First registration
+     * wins (all of a job's writes belong to one session).
      *
      * @param jobId the job id, must be &gt;= 0 (loose writes are never
      * captured)
+     * @param owner the owning session's composite change set identity
      * @return true when this registration won; false when the job already
      * has a sink (or the arguments are invalid) - the caller should use
-     * {@link #get} and drop its own instance
+     * {@link #resolveOwned} and drop its own instance
      */
-    public static boolean register(UUID player, int jobId, ICaptureSink sink) {
+    public static boolean register(UUID player, int jobId, ICaptureSink sink,
+            Object owner) {
         if (jobId < 0 || sink == null) {
             return false;
         }
-        return s_sinks.putIfAbsent(new Key(player, jobId), sink) == null;
+        return s_sinks.putIfAbsent(new Key(player, jobId),
+                new Entry(sink, owner)) == null;
     }
 
     /**
      * The capture sink of a job, null when the job records undo through
-     * the object change set (or not at all)
+     * the object change set (or not at all). The flush path resolution -
+     * ownership was already enforced at registration time by
+     * {@link #resolveOwned}.
      */
     public static ICaptureSink get(UUID player, int jobId) {
         if (jobId < 0) {
             return null;
         }
-        return s_sinks.get(new Key(player, jobId));
+        final Entry entry = s_sinks.get(new Key(player, jobId));
+        return entry == null ? null : entry.sink;
     }
 
     /**
-     * Drop the sink of a finished job (called when its buffer is pruned)
+     * Resolve the sink of a job for a specific owner (the suppression
+     * seam). A hit registered by ANOTHER owner is a stale leftover of a
+     * dead job whose id was reused - ids are unique among a player's live
+     * jobs, so two owners can never legitimately share one - and is
+     * evicted and sealed so it can neither swallow the new job's captures
+     * nor accept any of its own.
+     *
+     * @return the caller's sink, or null when the caller must register
+     * its own
+     */
+    public static ICaptureSink resolveOwned(UUID player, int jobId, Object owner) {
+        if (jobId < 0) {
+            return null;
+        }
+        final Key key = new Key(player, jobId);
+        final Entry entry = s_sinks.get(key);
+        if (entry == null) {
+            return null;
+        }
+        if (entry.owner == owner) {
+            return entry.sink;
+        }
+
+        //Stale: evict and seal, then let the caller register its own
+        if (s_sinks.remove(key, entry)) {
+            entry.sink.jobDone();
+        }
+        return null;
+    }
+
+    /**
+     * Drop the sink of a finished job and seal it: no further capture may
+     * be accepted in its name (job ids are reused). Called when the job's
+     * buffer is pruned or discarded and when a job is removed without
+     * ever having buffered.
      */
     public static void unregister(UUID player, int jobId) {
-        s_sinks.remove(new Key(player, jobId));
+        final Entry entry = s_sinks.remove(new Key(player, jobId));
+        if (entry != null) {
+            entry.sink.jobDone();
+        }
     }
 
     /**
-     * Drop every registration of a closing session's sink (safety net for
-     * jobs that registered but never buffered - their buffers were never
-     * created, so the prune hook never fires)
+     * Drop every registration of a closing session's sink WITHOUT sealing
+     * (the caller closes the sink right after; safety net for jobs that
+     * registered but never buffered - their buffers were never created,
+     * so the prune hook never fires)
      */
     public static void unregisterSink(ICaptureSink sink) {
         if (sink == null) {
             return;
         }
-        for (Iterator<Map.Entry<Key, ICaptureSink>> it
+        for (Iterator<Map.Entry<Key, Entry>> it
                 = s_sinks.entrySet().iterator(); it.hasNext();) {
-            if (it.next().getValue() == sink) {
+            if (it.next().getValue().sink == sink) {
                 it.remove();
             }
         }

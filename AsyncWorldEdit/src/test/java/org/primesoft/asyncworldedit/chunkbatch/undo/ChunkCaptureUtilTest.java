@@ -94,6 +94,11 @@ public class ChunkCaptureUtilTest {
                 int newId, int newData, int seq) {
             fail("the chunk capture walk must never emit cleared captures");
         }
+
+        @Override
+        public void jobDone() {
+            fail("the chunk capture walk must never end a job");
+        }
     }
 
     @Test

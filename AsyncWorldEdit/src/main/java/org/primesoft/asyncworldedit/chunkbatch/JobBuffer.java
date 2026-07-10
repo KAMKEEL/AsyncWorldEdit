@@ -56,6 +56,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
 
 /**
  * The buffered block writes of one async job in one world: chunk keyed
@@ -137,6 +138,15 @@ public final class JobBuffer {
      */
     private final long m_startMillis;
 
+    /**
+     * The undo capture sink bound at buffer creation (the producer
+     * registered it earlier in the SAME write's call stack, so the
+     * binding is deterministic). Flushes resolve through this reference
+     * instead of a live registry lookup, so a later reuse of the job id
+     * by another session can never redirect this buffer's captures.
+     */
+    private volatile ICaptureSink m_captureSink;
+
     JobBuffer(IPlayerEntry player, int jobId, String worldName,
             World weWorld, IWorld bukkitWorld, IJobEntry job) {
         m_player = player;
@@ -183,6 +193,18 @@ public final class JobBuffer {
 
     void setJob(IJobEntry job) {
         m_job = job;
+    }
+
+    /**
+     * The undo capture sink this buffer's flushes report to, null when
+     * the job records undo through the object change set (or not at all)
+     */
+    public ICaptureSink getCaptureSink() {
+        return m_captureSink;
+    }
+
+    void setCaptureSink(ICaptureSink captureSink) {
+        m_captureSink = captureSink;
     }
 
     /**

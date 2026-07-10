@@ -48,6 +48,7 @@
 package org.primesoft.asyncworldedit.chunkbatch;
 
 import com.sk89q.worldedit.world.World;
+import java.io.File;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -69,8 +70,12 @@ import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.IJobEntry;
 import org.primesoft.asyncworldedit.api.blockPlacer.entries.JobStatus;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ChunkCaptureUtil;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoLog;
 import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
 import org.primesoft.asyncworldedit.chunkbatch.undo.ICaptureSink;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ISlotReader;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.ColumnarUndoSink;
 
 /**
  * Pure logic tests for the buffer-first block placement engine coordinator:
@@ -255,9 +260,12 @@ public class JobBufferRegistryTest {
     }
 
     /**
-     * No-op capture sink; only its identity matters to the routing
+     * No-op capture sink; only its identity and the jobDone (seal)
+     * signal matter to the routing
      */
     private static final class FakeCaptureSink implements ICaptureSink {
+
+        int jobDoneCalls;
 
         @Override
         public void beginSection(int cx, int cz, int section, int firstSeq, int lastSeq) {
@@ -275,6 +283,11 @@ public class JobBufferRegistryTest {
         public void captureCleared(int x, int y, int z, int oldId, int oldData,
                 int newId, int newData, int seq) {
         }
+
+        @Override
+        public void jobDone() {
+            jobDoneCalls++;
+        }
     }
 
     @Test
@@ -287,7 +300,7 @@ public class JobBufferRegistryTest {
 
         final FakeCaptureSink capture = new FakeCaptureSink();
         try {
-            assertTrue(ColumnarUndoRegistry.register(uuid, 5, capture));
+            assertTrue(ColumnarUndoRegistry.register(uuid, 5, capture, new Object()));
 
             //Two chunks of the same job
             buffer(reg, p, 5, job.proxy, world, 0, 64, 0, 1, 0);
@@ -354,7 +367,7 @@ public class JobBufferRegistryTest {
 
         final FakeCaptureSink capture = new FakeCaptureSink();
         try {
-            assertTrue(ColumnarUndoRegistry.register(uuid, 7, capture));
+            assertTrue(ColumnarUndoRegistry.register(uuid, 7, capture, new Object()));
             buffer(reg, p, 7, job, world, 0, 64, 0, 1, 0);
 
             canceled[0] = true;
@@ -367,6 +380,81 @@ public class JobBufferRegistryTest {
             assertNull(ColumnarUndoRegistry.get(uuid, 7));
         } finally {
             ColumnarUndoRegistry.unregister(uuid, 7);
+        }
+    }
+
+    @Test
+    public void jobIdReuseAcrossSessionsRecordsToTheNewLogAndSealsTheOld() throws Exception {
+        //Job ids are reused (max(live)+1). Session A's job 3 registered a
+        //capture sink at first suppression but never created a buffer, so
+        //no prune hook ever fired for it; session B's next command reuses
+        //id 3. The second job must record into ITS OWN log and the first
+        //log must be sealed - without the ownership binding the new edit
+        //captured into the dead session's log and silently lost its undo.
+        final JobBufferRegistry reg = new JobBufferRegistry();
+        final IWorld world = aweWorld("world");
+        final UUID uuid = new UUID(12, 12);
+        final IPlayerEntry p = player(uuid);
+        final Object sessionA = new Object();
+        final Object sessionB = new Object();
+
+        final File spoolA = File.createTempFile("awe-reuse-a", ".bin");
+        final File spoolB = File.createTempFile("awe-reuse-b", ".bin");
+        spoolA.delete();
+        spoolB.delete();
+        final ColumnarUndoLog logA = new ColumnarUndoLog(spoolA, Long.MAX_VALUE);
+        final ColumnarUndoLog logB = new ColumnarUndoLog(spoolB, Long.MAX_VALUE);
+        final ColumnarUndoSink sinkA = new ColumnarUndoSink(logA, null);
+        final ColumnarUndoSink sinkB = new ColumnarUndoSink(logB, null);
+
+        try {
+            //Session A's job 3: registered, never buffered, job died
+            assertTrue(ColumnarUndoRegistry.register(uuid, 3, sinkA, sessionA));
+
+            //Session B's job with the reused id resolves: the stale hit is
+            //evicted and sealed, B registers its own sink (this is exactly
+            //what ExtendedChangeSetExtent.suppressToColumnar does)
+            assertNull(ColumnarUndoRegistry.resolveOwned(uuid, 3, sessionB));
+            assertTrue(logA.isSealed());
+            assertTrue(ColumnarUndoRegistry.register(uuid, 3, sinkB, sessionB));
+
+            //B's job buffers a block and flushes with a capture pass
+            final FakeJob job = new FakeJob();
+            buffer(reg, p, 3, job.proxy, world, 0, 64, 0, 7, 1);
+            job.finish();
+
+            final JobBufferRegistry.IFlushSink capturingFlush
+                    = new JobBufferRegistry.IFlushSink() {
+                        @Override
+                        public void flush(World weWorld, IWorld aweWorld,
+                                PendingChunk chunk, ICaptureSink captureSink) {
+                            assertNotNull("the flush must carry the job's sink",
+                                    captureSink);
+                            ChunkCaptureUtil.capture(chunk, captureSink,
+                                    new ISlotReader() {
+                                @Override
+                                public int read(int x, int y, int z) {
+                                    return SectionMath.encodeSlot(1, 0, false);
+                                }
+                            });
+                        }
+                    };
+            reg.drainRoundRobin(NO_LIMIT, capturingFlush, false);
+
+            //The second job recorded to its own log; the first stayed
+            //sealed and empty. (The prune after the drain seals B's log
+            //too - its job is over and its id may be reused in turn.)
+            assertEquals(1, logB.getCaptureCount());
+            assertEquals(0, logA.getCaptureCount());
+            assertTrue(logA.isSealed());
+            assertTrue(logB.isSealed());
+            assertNull(ColumnarUndoRegistry.get(uuid, 3));
+        } finally {
+            ColumnarUndoRegistry.unregister(uuid, 3);
+            sinkA.close();
+            sinkB.close();
+            spoolA.delete();
+            spoolB.delete();
         }
     }
 
