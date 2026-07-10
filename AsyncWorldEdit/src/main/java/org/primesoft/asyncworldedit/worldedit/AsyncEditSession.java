@@ -80,6 +80,7 @@ import org.primesoft.asyncworldedit.chunkbatch.BatchEligibility;
 import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.chunkbatch.CuboidSplitter;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
+import org.primesoft.asyncworldedit.chunkbatch.SectionMath;
 import org.primesoft.asyncworldedit.configuration.BHLevel;
 import org.primesoft.asyncworldedit.configuration.ConfigEngine;
 import org.primesoft.asyncworldedit.configuration.ConfigProvider;
@@ -1064,12 +1065,23 @@ public class AsyncEditSession extends ThreadSafeEditSession {
 
     @Override
     public int replaceBlocks(Region region, Set<BaseBlock> filter, BaseBlock replacement) throws MaxChangedBlocksException {
-        return super.replaceBlocks(region, filter, replacement); //To change body of generated methods, choose Tools | Templates.
+        final int fast = tryFillFast(region, replacement, FILL_REPLACE, filter);
+        if (fast >= 0) {
+            return fast;
+        }
+        return super.replaceBlocks(region, filter, replacement);
     }
 
     @Override
     public int replaceBlocks(Region region, Set<BaseBlock> filter, Pattern pattern) throws MaxChangedBlocksException {
-        return super.replaceBlocks(region, filter, pattern); //To change body of generated methods, choose Tools | Templates.
+        if (pattern instanceof SingleBlockPattern) {
+            final int fast = tryFillFast(region,
+                    ((SingleBlockPattern) pattern).getBlock(), FILL_REPLACE, filter);
+            if (fast >= 0) {
+                return fast;
+            }
+        }
+        return super.replaceBlocks(region, filter, pattern);
     }
 
     @Override
@@ -1095,25 +1107,40 @@ public class AsyncEditSession extends ThreadSafeEditSession {
 
     /**
      * Fast lane operation kinds: a solid cuboid fill (//set), the four
-     * vertical walls (//walls) or all six faces (//faces)
+     * vertical walls (//walls), all six faces (//faces) or a conditional
+     * from-&gt;to fill (//replace)
      */
     private static final int FILL_SOLID = 0;
     private static final int FILL_WALLS = 1;
     private static final int FILL_FACES = 2;
+    private static final int FILL_REPLACE = 3;
+
+    private int tryFillFast(final Region region, final BaseBlock block,
+            final int opKind) {
+        return tryFillFast(region, block, opKind, null);
+    }
 
     /**
-     * The fast lane: compile an eligible cuboid //set, //walls or //faces
-     * straight into the job's chunk section buffers (bulk array fills -
-     * no per block pipeline). Eligibility is a strict whitelist; ANY miss
-     * returns -1 and the caller runs the unchanged per block path. See
-     * docs/section-engine-plan.md.
+     * The fast lane: compile an eligible cuboid //set, //walls, //faces
+     * or //replace straight into the job's chunk section buffers (bulk
+     * array fills - no per block pipeline). Eligibility is a strict
+     * whitelist; ANY miss returns -1 and the caller runs the unchanged
+     * per block path. See docs/section-engine-plan.md.
+     *
+     * //replace (FILL_REPLACE, filter != null) compiles to CONDITIONAL
+     * fills resolved against the pre-write world at flush time; it
+     * additionally requires a single-block filter with a 16 bit id
+     * (data -1 = wildcard, matching WE's equalsFuzzy). Its return value
+     * reports the QUEUED (region) count, not the matched count - the
+     * matches are only known at flush time (documented in
+     * docs/engine-architecture.md); undo remains exact either way.
      *
      * @return the async-queued sentinel (0) when the fast lane took the
      * operation, -1 when the caller must fall through to the per block
      * path
      */
     private int tryFillFast(final Region region, final BaseBlock block,
-            final int opKind) {
+            final int opKind, final Set<BaseBlock> filter) {
         final ConfigEngine engineCfg = ConfigProvider.engine();
         if (engineCfg == null || !engineCfg.isFastLane()) {
             return -1;
@@ -1142,9 +1169,30 @@ public class AsyncEditSession extends ThreadSafeEditSession {
         //Walls/faces geometry is defined by the ORIGINAL region bounds; a
         //region poking out of the world would shift its floor/ceiling and
         //wall slices onto interior blocks - not eligible
-        if (opKind != FILL_SOLID
+        if ((opKind == FILL_WALLS || opKind == FILL_FACES)
                 && (min.getBlockY() < 0 || max.getBlockY() > 255)) {
             return -1;
+        }
+
+        //A //replace needs exactly ONE filter block whose id fits the
+        //slot encoding; filter data -1 is WE's fuzzy wildcard (any data)
+        final int matchId;
+        final int matchData;
+        if (opKind == FILL_REPLACE) {
+            if (filter == null || filter.size() != 1) {
+                return -1;
+            }
+            final BaseBlock from = filter.iterator().next();
+            if (from == null || from.getType() < 0
+                    || from.getType() > SectionMath.ID16_MAX_ID
+                    || from.getData() < -1 || from.getData() > SectionMath.MAX_DATA) {
+                return -1;
+            }
+            matchId = from.getType();
+            matchData = from.getData();
+        } else {
+            matchId = -1;
+            matchData = -1;
         }
 
         //Undo routing: with undo enabled the job MUST have a columnar log
@@ -1176,6 +1224,10 @@ public class AsyncEditSession extends ThreadSafeEditSession {
             case FILL_FACES:
                 weOp = WorldeditOperations.makeCuboidFaces;
                 jobName = "makeCuboidFaces";
+                break;
+            case FILL_REPLACE:
+                weOp = WorldeditOperations.replaceBlocks;
+                jobName = "replaceBlocks";
                 break;
             default:
                 weOp = WorldeditOperations.setBlocks;
@@ -1245,6 +1297,8 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                         return session.makeCuboidWalls(region, block);
                     case FILL_FACES:
                         return session.makeCuboidFaces(region, block);
+                    case FILL_REPLACE:
+                        return session.replaceBlocks(region, filter, block);
                     default:
                         return session.setBlocks(region, block);
                 }
@@ -1284,13 +1338,24 @@ public class AsyncEditSession extends ThreadSafeEditSession {
                                     if (session.isCanceled()) {
                                         return false;
                                     }
-                                    final int r = registry.fillChunkBox(
-                                            m_player, jobId, weWorld, aweWorld,
-                                            job, x0, y0, z0, x1, y1, z1,
-                                            id, data, false);
+                                    final int r = matchId < 0
+                                            ? registry.fillChunkBox(
+                                                    m_player, jobId, weWorld, aweWorld,
+                                                    job, x0, y0, z0, x1, y1, z1,
+                                                    id, data, false)
+                                            : registry.replaceChunkBox(
+                                                    m_player, jobId, weWorld, aweWorld,
+                                                    job, x0, y0, z0, x1, y1, z1,
+                                                    id, data, false, matchId, matchData);
                                     if (r >= 0) {
                                         written[0] += r;
                                         return true;
+                                    }
+                                    if (r == -2) {
+                                        //Condition conflict (cannot happen
+                                        //for a one-operation job; defensive):
+                                        //abort to the per block rerun
+                                        return false;
                                     }
                                     final long now = System.currentTimeMillis();
                                     if (stalledSince == 0) {

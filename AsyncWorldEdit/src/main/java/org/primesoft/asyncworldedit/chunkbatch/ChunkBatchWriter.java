@@ -847,6 +847,17 @@ public class ChunkBatchWriter {
             return;
         }
 
+        //Conditional slots (//replace fast lane) are resolved against the
+        //pre-write world FIRST: matching slots become ordinary pending
+        //slots, non-matching slots are dropped. After this the chunk holds
+        //only ordinary slots, so the undo capture (below) never sees a
+        //non-matching slot, the classic replay never places one, and the
+        //tile invalidation of the direct write only fires where a write
+        //really happens.
+        if (chunk.hasConditional()) {
+            resolveConditionals(parent, bukkitWorld, chunk);
+        }
+
         if (captureSink != null) {
             captureJobChunk(parent, bukkitWorld, chunk, captureSink);
         }
@@ -883,38 +894,7 @@ public class ChunkBatchWriter {
     private void captureJobChunk(final World parent, IWorld bukkitWorld,
             PendingChunk chunk, ICaptureSink captureSink) {
         try {
-            final ISlotReader worldReader = new ISlotReader() {
-                @Override
-                public int read(int x, int y, int z) {
-                    try {
-                        final BaseBlock block = parent.getBlock(new Vector(x, y, z));
-                        return SectionMath.encodeSlot(block.getType(), block.getData(), false);
-                    } catch (Throwable ex) {
-                        return SectionMath.EMPTY_SLOT;
-                    }
-                }
-            };
-
-            ISlotReader reader = worldReader;
-            final NmsChunkWriter nmsWriter = m_nmsWriter;
-            final org.bukkit.World bukkit = resolveBukkitWorld(bukkitWorld);
-            if (nmsWriter != null && !m_runtimeDisabled && bukkit != null) {
-                try {
-                    final ISlotReader raw = nmsWriter.rawReader(
-                            bukkit, chunk.getX(), chunk.getZ());
-                    reader = new ISlotReader() {
-                        @Override
-                        public int read(int x, int y, int z) {
-                            final int slot = raw.read(x, y, z);
-                            return slot != SectionMath.EMPTY_SLOT
-                                    ? slot : worldReader.read(x, y, z);
-                        }
-                    };
-                } catch (Exception ex) {
-                    //Raw section access failed: the parent world fallback
-                    //still captures every slot, just slower
-                }
-            }
+            final ISlotReader reader = oldValueReader(parent, bukkitWorld, chunk);
 
             final int misses = ChunkCaptureUtil.capture(chunk, captureSink, reader);
             if (misses > 0 && !m_captureErrorLogged) {
@@ -930,6 +910,73 @@ public class ChunkBatchWriter {
                 log("Error while capturing undo of buffered chunk " + chunk.getX()
                         + "," + chunk.getZ() + ": " + ex);
             }
+        }
+    }
+
+    /**
+     * A pre-write old value reader for one chunk: the raw NMS section
+     * reads when available (one reflective section fetch for the whole
+     * chunk), any raw miss - and every read when the direct writer is
+     * unavailable (the classic-degradation path) - falls back to a per
+     * block parent world read.
+     */
+    private ISlotReader oldValueReader(final World parent, IWorld bukkitWorld,
+            PendingChunk chunk) {
+        final ISlotReader worldReader = new ISlotReader() {
+            @Override
+            public int read(int x, int y, int z) {
+                try {
+                    final BaseBlock block = parent.getBlock(new Vector(x, y, z));
+                    return SectionMath.encodeSlot(block.getType(), block.getData(), false);
+                } catch (Throwable ex) {
+                    return SectionMath.EMPTY_SLOT;
+                }
+            }
+        };
+
+        final NmsChunkWriter nmsWriter = m_nmsWriter;
+        final org.bukkit.World bukkit = resolveBukkitWorld(bukkitWorld);
+        if (nmsWriter != null && !m_runtimeDisabled && bukkit != null) {
+            try {
+                final ISlotReader raw = nmsWriter.rawReader(
+                        bukkit, chunk.getX(), chunk.getZ());
+                return new ISlotReader() {
+                    @Override
+                    public int read(int x, int y, int z) {
+                        final int slot = raw.read(x, y, z);
+                        return slot != SectionMath.EMPTY_SLOT
+                                ? slot : worldReader.read(x, y, z);
+                    }
+                };
+            } catch (Exception ex) {
+                //Raw section access failed: the parent world fallback
+                //still reads every slot, just slower
+            }
+        }
+        return worldReader;
+    }
+
+    /**
+     * Resolve the conditional slots of a job buffer chunk against the
+     * pre-write world (see {@link PendingChunk#resolveConditionals}).
+     * Unreadable old values drop their slots - never write what cannot be
+     * verified - and are warned about once.
+     */
+    private void resolveConditionals(World parent, IWorld bukkitWorld,
+            PendingChunk chunk) {
+        final ISlotReader reader = oldValueReader(parent, bukkitWorld, chunk);
+        final int misses = chunk.resolveConditionals(new PendingChunk.IOldValueReader() {
+            @Override
+            public int read(int x, int y, int z) {
+                return reader.read(x, y, z);
+            }
+        });
+        if (misses > 0 && !m_captureErrorLogged) {
+            m_captureErrorLogged = true;
+            log(String.format(
+                    "Warning: %1$d conditional block(s) of buffered chunk %2$d,%3$d"
+                    + " could not be read for match resolution (dropped).",
+                    misses, chunk.getX(), chunk.getZ()));
         }
     }
 

@@ -437,6 +437,40 @@ public final class JobBufferRegistry {
             IWorld aweWorld, IJobEntry job,
             int x0, int y0, int z0, int x1, int y1, int z1,
             int id, int data, boolean notify) {
+        return fillChunkBox(player, jobId, weWorld, aweWorld, job,
+                x0, y0, z0, x1, y1, z1, id, data, notify, -1, -1);
+    }
+
+    /**
+     * Conditional bulk fill - the //replace fast lane's production call:
+     * every covered slot is stored as a CONDITIONAL pending block that the
+     * flush only writes (and only undo-captures) when the pre-write world
+     * value matches (matchId, matchData). Everything else - box contract,
+     * budget acquisition, backpressure - is identical to
+     * {@link #fillChunkBox}.
+     *
+     * @param matchId the block id the pre-write value must have
+     * @param matchData the metadata the pre-write value must have, -1 = any
+     * @return the number of newly used slots, -1 on budget refusal
+     * (backpressure: retry after the drain), or -2 when a covered section
+     * already holds a DIFFERENT condition (permanent: abort the fast lane)
+     */
+    public int replaceChunkBox(IPlayerEntry player, int jobId, World weWorld,
+            IWorld aweWorld, IJobEntry job,
+            int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify, int matchId, int matchData) {
+        return fillChunkBox(player, jobId, weWorld, aweWorld, job,
+                x0, y0, z0, x1, y1, z1, id, data, notify, matchId, matchData);
+    }
+
+    /**
+     * The shared bulk-fill core: matchId &lt; 0 = unconditional fill,
+     * otherwise conditional (see {@link #replaceChunkBox})
+     */
+    private int fillChunkBox(IPlayerEntry player, int jobId, World weWorld,
+            IWorld aweWorld, IJobEntry job,
+            int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify, int matchId, int matchData) {
         if (aweWorld == null || y0 < 0 || y1 > 255 || y0 > y1) {
             return -1;
         }
@@ -458,7 +492,7 @@ public final class JobBufferRegistry {
                     }
                     buf.getChunkOrder().add(key);
                     return fillLocked(buf, created, x0, y0, z0, x1, y1, z1,
-                            id, data, notify);
+                            id, data, notify, matchId, matchData);
                 }
             }
 
@@ -467,7 +501,7 @@ public final class JobBufferRegistry {
                     continue;
                 }
                 return fillLocked(buf, chunk, x0, y0, z0, x1, y1, z1,
-                        id, data, notify);
+                        id, data, notify, matchId, matchData);
             }
         }
     }
@@ -475,11 +509,12 @@ public final class JobBufferRegistry {
     /**
      * Fill into a locked, still-mapped chunk: acquire the budget for the
      * new sections, fill, update the counters. -1 (nothing stored) when
-     * the budget cannot cover the box.
+     * the budget cannot cover the box; -2 (nothing stored) on a condition
+     * conflict of a conditional fill.
      */
     private int fillLocked(JobBuffer buf, PendingChunk chunk,
             int x0, int y0, int z0, int x1, int y1, int z1,
-            int id, int data, boolean notify) {
+            int id, int data, boolean notify, int matchId, int matchData) {
         final int newSections = chunk.newSectionsInYRange(y0, y1);
         int acquired = 0;
         while (acquired < newSections) {
@@ -490,8 +525,21 @@ public final class JobBufferRegistry {
             acquired++;
         }
 
-        final int added = chunk.fillBox(x0, y0, z0, x1, y1, z1, id, data,
-                notify, (int) m_writeSeq.getAndIncrement());
+        final int added;
+        if (matchId < 0) {
+            added = chunk.fillBox(x0, y0, z0, x1, y1, z1, id, data,
+                    notify, (int) m_writeSeq.getAndIncrement());
+        } else {
+            added = chunk.fillBoxConditional(x0, y0, z0, x1, y1, z1, id, data,
+                    notify, (int) m_writeSeq.getAndIncrement(), matchId, matchData);
+            if (added < 0) {
+                //Condition conflict: nothing was stored (precheck) - give
+                //back the budget slots acquired for sections the fill did
+                //not allocate after all
+                SectionBudget.getShared().release(acquired);
+                return -2;
+            }
+        }
         chunk.setLastTouchRun(m_runCounter);
 
         buf.getSectionsHeld().addAndGet(newSections);

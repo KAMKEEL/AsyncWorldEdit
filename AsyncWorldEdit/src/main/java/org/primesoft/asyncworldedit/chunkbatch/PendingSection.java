@@ -117,6 +117,33 @@ public final class PendingSection {
      */
     private int m_nonAirCount;
 
+    /**
+     * Bitset marking slots whose pending value is CONDITIONAL: it is only
+     * written when the pre-write world value matches this section's match
+     * condition (see {@link #setConditional}). Lazily allocated - plain
+     * fills never pay for it.
+     */
+    private long[] m_condBits;
+
+    /**
+     * Number of conditional slots
+     */
+    private int m_condCount;
+
+    /**
+     * The block id conditional slots match against, -1 while no condition
+     * is installed. One condition per section: the fast lane compiles one
+     * operation per job, so a section never sees two different conditions
+     * (a second condition is refused and the compiler aborts to the per
+     * block lane).
+     */
+    private int m_matchId = -1;
+
+    /**
+     * The metadata conditional slots match against, -1 = any (wildcard)
+     */
+    private int m_matchData = -1;
+
     public PendingSection() {
         m_slots = new int[SectionMath.SECTION_SIZE];
         m_seq = new int[SectionMath.SECTION_SIZE];
@@ -171,6 +198,117 @@ public final class PendingSection {
 
         m_slots[index] = SectionMath.encodeSlot(id, data, notify);
         m_seq[index] = seq;
+        //An unconditional write over a conditional slot wins outright:
+        //the conditional intent is dropped (last write wins)
+        clearConditionalBit(index);
+    }
+
+    /**
+     * Store a CONDITIONAL pending block: at flush time the (id, data) is
+     * only written when the pre-write world value at this position matches
+     * (matchId, matchData); a non-match writes nothing and is never
+     * captured for undo (see PendingChunk.resolveConditionals).
+     *
+     * Semantics against earlier writes of the same job (last write wins,
+     * matching the per block lane's read-your-writes replace exactly):
+     * <ul>
+     * <li>empty slot: stored conditional;</li>
+     * <li>existing UNCONDITIONAL pending value: the condition is resolved
+     * NOW against that value - the per block lane's mask would read it
+     * through the overlay. A match stores the replacement (unconditional),
+     * a non-match leaves the pending value untouched;</li>
+     * <li>existing conditional slot (same condition, enforced below): the
+     * replacement value and sequence are overwritten.</li>
+     * </ul>
+     *
+     * @param matchId the block id the pre-write value must have (0..0xFFFF)
+     * @param matchData the metadata the pre-write value must have, -1 = any
+     * @return false when the section already holds conditional slots with a
+     * DIFFERENT condition - nothing is stored and the caller must abort the
+     * fast lane (one operation per job means this never happens in
+     * production; the guard keeps the buffer sound if it ever does)
+     */
+    public boolean setConditional(int index, int id, int data, boolean notify,
+            int seq, int matchId, int matchData) {
+        if (m_condCount > 0 && (m_matchId != matchId || m_matchData != matchData)) {
+            return false;
+        }
+
+        final int old = m_slots[index];
+        if (old != SectionMath.EMPTY_SLOT && !isConditional(index)) {
+            //Resolve against the earlier pending value right now
+            if (SectionMath.slotId(old) == matchId
+                    && (matchData < 0 || SectionMath.slotData(old) == matchData)) {
+                set(index, id, data, notify, seq);
+            }
+            return true;
+        }
+
+        set(index, id, data, notify, seq);
+        m_matchId = matchId;
+        m_matchData = matchData;
+        if (m_condBits == null) {
+            m_condBits = new long[SectionMath.SECTION_SIZE / 64];
+        }
+        final long bit = 1L << (index & 63);
+        if ((m_condBits[index >> 6] & bit) == 0) {
+            m_condBits[index >> 6] |= bit;
+            m_condCount++;
+        }
+        return true;
+    }
+
+    /**
+     * True when the pending value at an index is conditional
+     */
+    public boolean isConditional(int index) {
+        return m_condBits != null && (m_condBits[index >> 6] & (1L << (index & 63))) != 0;
+    }
+
+    /**
+     * Number of conditional slots
+     */
+    public int getConditionalCount() {
+        return m_condCount;
+    }
+
+    /**
+     * The block id of this section's match condition (only meaningful
+     * while {@link #getConditionalCount()} is non zero)
+     */
+    public int getMatchId() {
+        return m_matchId;
+    }
+
+    /**
+     * The metadata of this section's match condition, -1 = any (only
+     * meaningful while {@link #getConditionalCount()} is non zero)
+     */
+    public int getMatchData() {
+        return m_matchData;
+    }
+
+    /**
+     * Turn a conditional slot into an ordinary pending slot (its condition
+     * matched the pre-write world value). The slot value stays.
+     */
+    public void markResolved(int index) {
+        clearConditionalBit(index);
+    }
+
+    /**
+     * Drop the conditional bit of a slot (unconditional overwrite, clear,
+     * or resolution)
+     */
+    private void clearConditionalBit(int index) {
+        if (m_condBits == null) {
+            return;
+        }
+        final long bit = 1L << (index & 63);
+        if ((m_condBits[index >> 6] & bit) != 0) {
+            m_condBits[index >> 6] &= ~bit;
+            m_condCount--;
+        }
     }
 
     /**
@@ -191,6 +329,7 @@ public final class PendingSection {
         }
         m_slots[index] = SectionMath.EMPTY_SLOT;
         m_seq[index] = 0;
+        clearConditionalBit(index);
         return true;
     }
 

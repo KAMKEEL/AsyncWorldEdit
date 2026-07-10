@@ -235,6 +235,158 @@ public final class PendingChunk {
     }
 
     /**
+     * Conditional bulk fill: store a CONDITIONAL pending (id, data) for
+     * every position of a chunk-local box - the compilation target of an
+     * eligible //replace. At flush time each slot is only written when the
+     * pre-write world value matches (matchId, matchData); see
+     * {@link #resolveConditionals}. Box contract and budget contract are
+     * identical to {@link #fillBox}.
+     *
+     * @param matchId the block id the pre-write value must have
+     * @param matchData the metadata the pre-write value must have, -1 = any
+     * @return the number of newly used slots, or -1 when a covered section
+     * already holds conditional slots with a DIFFERENT condition (nothing
+     * is stored; the caller aborts the fast lane)
+     */
+    public int fillBoxConditional(int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify, int seq, int matchId, int matchData) {
+        if (SectionMath.blockToChunk(x0) != m_cx || SectionMath.blockToChunk(x1) != m_cx
+                || SectionMath.blockToChunk(z0) != m_cz || SectionMath.blockToChunk(z1) != m_cz
+                || y0 < 0 || y1 > 255 || x0 > x1 || y0 > y1 || z0 > z1) {
+            return 0;
+        }
+
+        //Condition compatibility precheck: nothing is stored when any
+        //covered section already holds a DIFFERENT condition, so a refusal
+        //never leaves partial state behind
+        for (int sy = SectionMath.sectionOfY(y0); sy <= SectionMath.sectionOfY(y1); sy++) {
+            final PendingSection section = m_sections[sy];
+            if (section != null && section.getConditionalCount() > 0
+                    && (section.getMatchId() != matchId
+                    || section.getMatchData() != matchData)) {
+                return -1;
+            }
+        }
+
+        int added = 0;
+        for (int sy = SectionMath.sectionOfY(y0); sy <= SectionMath.sectionOfY(y1); sy++) {
+            final int secBase = sy << 4;
+            final int fy0 = Math.max(y0, secBase);
+            final int fy1 = Math.min(y1, secBase + 15);
+
+            PendingSection section = m_sections[sy];
+            if (section == null) {
+                section = new PendingSection();
+                m_sections[sy] = section;
+                m_sectionCount++;
+            }
+
+            final int before = section.getCount();
+            for (int y = fy0; y <= fy1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    for (int x = x0; x <= x1; x++) {
+                        section.setConditional(SectionMath.sectionIndex(x, y, z),
+                                id, data, notify, seq, matchId, matchData);
+                    }
+                }
+            }
+            added += section.getCount() - before;
+        }
+
+        m_count += added;
+        m_lastWriteSeq = seq;
+        return added;
+    }
+
+    /**
+     * True when any section holds conditional slots (the flush must
+     * resolve them against the pre-write world first)
+     */
+    public boolean hasConditional() {
+        for (int s = 0; s < SectionMath.SECTIONS_PER_CHUNK; s++) {
+            final PendingSection section = m_sections[s];
+            if (section != null && section.getConditionalCount() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Old value source for {@link #resolveConditionals} (injected reader
+     * over the pre-write world)
+     */
+    public interface IOldValueReader {
+
+        /**
+         * @return the packed pre-write slot at a world position (encode
+         * with SectionMath), or {@link SectionMath#EMPTY_SLOT} when it
+         * cannot be read
+         */
+        int read(int x, int y, int z);
+    }
+
+    /**
+     * Resolve every conditional slot against the pre-write world: a slot
+     * whose old value matches its section's condition becomes an ordinary
+     * pending slot (it will be written and undo-captured exactly like a
+     * plain fill); a non-matching slot is CLEARED - it is never written,
+     * never captured and never replayed. An unreadable old value clears
+     * the slot too (never write what cannot be verified) and is counted
+     * for the caller's one-time warning.
+     *
+     * Must run on the flush path BEFORE the undo capture and BEFORE any
+     * write (direct section apply, classic replay, tile invalidation,
+     * overflow collection) - afterwards the chunk contains only ordinary
+     * slots and every downstream consumer works unchanged.
+     *
+     * @param reader the pre-write world reader
+     * @return number of conditional slots whose old value could not be read
+     */
+    public int resolveConditionals(IOldValueReader reader) {
+        final int bx = m_cx << 4;
+        final int bz = m_cz << 4;
+        int misses = 0;
+
+        for (int s = 0; s < SectionMath.SECTIONS_PER_CHUNK; s++) {
+            final PendingSection section = m_sections[s];
+            if (section == null || section.getConditionalCount() == 0) {
+                continue;
+            }
+
+            final int matchId = section.getMatchId();
+            final int matchData = section.getMatchData();
+            final int by = s << 4;
+
+            for (int index = 0; index < SectionMath.SECTION_SIZE
+                    && section.getConditionalCount() > 0; index++) {
+                if (!section.isConditional(index)) {
+                    continue;
+                }
+
+                final int old = reader.read(
+                        bx + SectionMath.indexToX(index),
+                        by + SectionMath.indexToY(index),
+                        bz + SectionMath.indexToZ(index));
+
+                if (old == SectionMath.EMPTY_SLOT) {
+                    misses++;
+                } else if (SectionMath.slotId(old) == matchId
+                        && (matchData < 0 || SectionMath.slotData(old) == matchData)) {
+                    section.markResolved(index);
+                    continue;
+                }
+
+                if (section.clear(index)) {
+                    m_count--;
+                }
+            }
+        }
+
+        return misses;
+    }
+
+    /**
      * Number of NEW section buffers a fill spanning [y0..y1] would
      * allocate. The registry acquires exactly this many shared budget
      * slots before calling {@link #fillBox}.
@@ -394,7 +546,13 @@ public final class PendingChunk {
 
     /**
      * The pending slot for a chunk local position (x and z 0..15, y world),
-     * {@link SectionMath#EMPTY_SLOT} when nothing is pending there
+     * {@link SectionMath#EMPTY_SLOT} when nothing is pending there.
+     *
+     * A CONDITIONAL slot reads as empty: whether it will be written is
+     * unknowable until the flush resolves it against the pre-write world,
+     * so overlay reads (read-your-writes) must fall through to the world
+     * - exactly what the per block lane's mask read would return before
+     * the replace decided.
      */
     public int getPendingSlotLocal(int lx, int y, int lz) {
         if (y < 0 || y > 255 || lx < 0 || lx > 15 || lz < 0 || lz > 15) {
@@ -406,7 +564,11 @@ public final class PendingChunk {
             return SectionMath.EMPTY_SLOT;
         }
 
-        return section.getSlot(SectionMath.sectionIndex(lx, y, lz));
+        final int index = SectionMath.sectionIndex(lx, y, lz);
+        if (section.isConditional(index)) {
+            return SectionMath.EMPTY_SLOT;
+        }
+        return section.getSlot(index);
     }
 
     /**
