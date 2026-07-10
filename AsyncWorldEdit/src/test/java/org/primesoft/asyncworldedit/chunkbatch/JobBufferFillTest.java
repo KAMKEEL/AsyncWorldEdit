@@ -224,6 +224,29 @@ public class JobBufferFillTest {
     }
 
     @Test
+    public void laneReflectsHowTheBufferWasProduced() {
+        JobBufferRegistry reg = new JobBufferRegistry();
+        UUID uuid = new UUID(5, 5);
+        IPlayerEntry p = player(uuid);
+        IWorld world = aweWorld();
+
+        //Only bulk fills: lane=fast
+        assertTrue(reg.fillChunkBox(p, 1, weWorld(), world, doneJob(),
+                0, 0, 0, 3, 3, 3, 1, 0, false) > 0);
+        assertEquals("fast", reg.getBuffer(uuid, 1).getLane());
+
+        //Only per block writes: lane=blocks
+        assertTrue(reg.buffer(p, 2, weWorld(), world, doneJob(),
+                0, 0, 0, 9, 0, false));
+        assertEquals("blocks", reg.getBuffer(uuid, 2).getLane());
+
+        //Both: lane=mixed
+        assertTrue(reg.buffer(p, 1, weWorld(), world, doneJob(),
+                8, 8, 8, 9, 0, false));
+        assertEquals("mixed", reg.getBuffer(uuid, 1).getLane());
+    }
+
+    @Test
     public void fillsAndSingleWritesShareTheGlobalSequence() {
         JobBufferRegistry reg = new JobBufferRegistry();
         IPlayerEntry p = player(new UUID(4, 4));

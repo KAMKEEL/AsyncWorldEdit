@@ -627,6 +627,30 @@ here instead of the median table above).
   (sanity), the -Xmx2G constrained pass, and the terrain-exactness
   eyeball check (the Phase 3 in-game gate).
 
+#### Fast-lane rows (KAWE3 section engine, added 2026-07-10)
+
+Same procedure and same selection as the matrix above; all rows use
+engine=buffered, undo-mode=columnar. `/awe engine` now also prints
+`fast-lane=...` so the screenshot self-documents the switch, and the
+job completion line carries `lane=fast|blocks|mixed` - a row is only
+valid when the lane tag matches the row (lane=fast for E/F/H,
+lane=blocks for the baselines; E with a stalled compile may report
+lane=mixed - note it).
+
+| # | scenario | switch | expected |
+|---|----------|--------|----------|
+| E | //set 1 (3.55M) | fast-lane: true | wall 1-3s (drain-bound), minTPS 19+, lane=fast |
+| E0 | //set 1 baseline | fast-lane: false | ~20s (the 178.9k blocks/sec row A) , lane=blocks |
+| F | //replace 1 5 (same region prefilled with 1) | true | wall 1-3s, lane=fast; count message shows region size (documented) |
+| F0 | //replace baseline | false | per block replace throughput (~27k/s upstream-bound) |
+| G | //undo of E | true | runs lower into fills: wall 1-3s vs the measured ~45s per block replay |
+| H | //redo of E | true | mirror of G |
+
+Record per row: [ENGINE] job line (lane tag, blocks/sec, minTPS,
+budget-exceeded, gc), wall clock, and for F a spot check that
+non-matching blocks (and tile entities under them) survived. After G/H
+spot check NEID ids + metas restore exactly (the Phase 3 gate check).
+
 ## Operation coverage matrix
 
 | Operation | Path | Notes / test |

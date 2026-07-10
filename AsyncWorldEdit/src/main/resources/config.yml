@@ -24,13 +24,16 @@ awe:
     #per job columnar undo log memory budget (MB) before it spools to a temp
     #file in the undo folder
     undo-spool-threshold-mb: 8
-    #operation fast lane: eligible cuboid //set, //walls and //faces with a
-    #constant block compile straight into section fills (near-instant large
-    #edits) instead of per block streams. Requires the buffered engine, the
-    #direct chunk writer, columnar undo (or undo off), no gmask, no block
-    #change limit and BlocksHub logging off; anything else silently uses the
-    #per block path. Master kill switch - false restores per block
-    #production everywhere.
+    #operation fast lane: eligible cuboid //set, //walls, //faces with a
+    #constant block and //replace with a single from block compile straight
+    #into section fills (near-instant large edits) instead of per block
+    #streams; //undo///redo of columnar history replays its runs the same
+    #way. Requires the buffered engine, the direct chunk writer, columnar
+    #undo (or undo off), no gmask, no block change limit and BlocksHub
+    #logging off; anything else silently uses the per block path. Note: a
+    #fast //replace reports the queued region size, not the matched count
+    #(matches are only known at flush time; undo stays exact). Master kill
+    #switch - false restores per block production everywhere.
     fast-lane: true
     #verbose engine logging: the per placer run [ENGINE] line (blocks, wall
     #time, TPS, budget, queue + buffer counters) and the per job completion

@@ -93,16 +93,22 @@ public class EngineStatsTest {
     @Test
     public void bufferedJobLineFormat() {
         assertEquals(
-                "[ENGINE] job 7 done: buffered blocks=5000 wall=250ms avg=20000 blocks/sec",
-                EngineStats.bufferedJobLine(7, 5000, 250));
+                "[ENGINE] job 7 done: buffered lane=fast blocks=5000 wall=250ms avg=20000 blocks/sec",
+                EngineStats.bufferedJobLine(7, "fast", 5000, 250));
+        assertEquals(
+                "[ENGINE] job 7 done: buffered lane=blocks blocks=5000 wall=250ms avg=20000 blocks/sec",
+                EngineStats.bufferedJobLine(7, "blocks", 5000, 250));
+        assertEquals(
+                "[ENGINE] job 7 done: buffered lane=mixed blocks=5000 wall=250ms avg=20000 blocks/sec",
+                EngineStats.bufferedJobLine(7, "mixed", 5000, 250));
     }
 
     @Test
     public void jobLinesDifferOnlyByEngineLabel() {
         String classic = EngineStats.classicJobLine(42, 128, 64);
-        String buffered = EngineStats.bufferedJobLine(42, 128, 64);
+        String buffered = EngineStats.bufferedJobLine(42, "blocks", 128, 64);
         assertEquals(classic.replace("classic", "ENGINE_LABEL"),
-                buffered.replace("buffered", "ENGINE_LABEL"));
+                buffered.replace("buffered lane=blocks", "ENGINE_LABEL"));
     }
 
     @Test
@@ -163,9 +169,9 @@ public class EngineStatsTest {
     @Test
     public void enrichedBufferedJobLineFormat() {
         assertEquals(
-                "[ENGINE] job 5 done: buffered blocks=329156 wall=2307ms avg=142677 blocks/sec"
+                "[ENGINE] job 5 done: buffered lane=fast blocks=329156 wall=2307ms avg=142677 blocks/sec"
                 + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3 gc=17/+412ms",
-                EngineStats.bufferedJobLine(5, 329156, 2307, true,
+                EngineStats.bufferedJobLine(5, "fast", 329156, 2307, true,
                         512 * MB, 38 * MB, 19.4, 3, 17, 412));
     }
 
@@ -174,9 +180,9 @@ public class EngineStatsTest {
         //a job with no GC activity must show gc=0/+0ms, not drop the field -
         //"zero collections" IS the buffered engine's proof metric
         assertEquals(
-                "[ENGINE] job 2 done: buffered blocks=100 wall=50ms avg=2000 blocks/sec"
+                "[ENGINE] job 2 done: buffered lane=blocks blocks=100 wall=50ms avg=2000 blocks/sec"
                 + "  heap-peak=64MB heap-delta=+0MB minTPS=20.0 budget-exceeded=0 gc=0/+0ms",
-                EngineStats.bufferedJobLine(2, 100, 50, true,
+                EngineStats.bufferedJobLine(2, "blocks", 100, 50, true,
                         64 * MB, 0, 20.0, 0, 0, 0));
     }
 
@@ -184,10 +190,10 @@ public class EngineStatsTest {
     public void enrichedJobLinesDifferOnlyByEngineLabel() {
         String classic = EngineStats.classicJobLine(9, 128, 64, true,
                 64 * MB, -5 * MB, 18.2, 1, 4, 33);
-        String buffered = EngineStats.bufferedJobLine(9, 128, 64, true,
+        String buffered = EngineStats.bufferedJobLine(9, "mixed", 128, 64, true,
                 64 * MB, -5 * MB, 18.2, 1, 4, 33);
         assertEquals(classic.replace("classic", "ENGINE_LABEL"),
-                buffered.replace("buffered", "ENGINE_LABEL"));
+                buffered.replace("buffered lane=mixed", "ENGINE_LABEL"));
     }
 
     @Test

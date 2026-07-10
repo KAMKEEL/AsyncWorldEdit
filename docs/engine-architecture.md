@@ -43,6 +43,41 @@ this file describes what ships.
    backward, object-then-columnar forward) and lazily materializes
    changes per RLE run; the replay re-enters the buffered engine.
 
+## The operation fast lane (compile to section fills)
+
+Eligible operations skip step 1's per block pipeline entirely: the
+command is intercepted at the `AsyncEditSession` region-method seam and
+COMPILED straight into the job's section buffers as bulk array fills
+(`JobBufferRegistry.fillChunkBox` / `replaceChunkBox`). Everything
+downstream - streaming drain, flush-time capture, tile invalidation,
+relight, packets, cancel - is the unchanged machinery above; the fast
+lane is a different producer, not a different writer.
+
+| operation | compiles when | notes |
+|---|---|---|
+| `//set` (also `//walls`, `//faces`) | cuboid region, ONE constant block | walls/faces decompose into up to 6 boxes |
+| `//replace from to` | cuboid region, ONE from block (data wildcard ok), ONE to block | compiles to CONDITIONAL fills, resolved against the pre-write world at flush time: only matching slots are written and undo-captured. Reports the QUEUED region count, not the matched count (matches are only known at flush; undo is exact) |
+| `//undo`, `//redo` of columnar history | always when the lane is available | RLE runs lower directly into buffer fills of the replay's loose buffer; tile/NBT (object) changes replay per block as before |
+| `//paste`, `//stack`, `//move` | never (documented decision) | arbitrary per-slot data does not compile to fills; they use the per block buffered lane |
+
+Eligibility (ALL must hold, checked per command; ANY miss silently uses
+the per block path):
+
+- `fast-lane: true`, buffered engine active, direct chunk writer
+  operational (probe ok)
+- the operation is async for the player; no session mask (gmask); block
+  change limit -1; BlocksHub logging disabled
+- undo mode columnar (or undo disabled); the constant block is plain
+  id+data (no NBT), not blacklisted
+- undo/redo replay additionally: no survival block bag
+
+Degradation inside the lane: a section-budget refusal is backpressure
+(the compiler waits for the drain; jobs larger than the budget stream
+through in waves); a stalled drain aborts the job's buffers and reruns
+the WHOLE operation per block - never half-fast. `fast-lane: false` is
+the master kill switch (per block production everywhere, exactly the
+pre-fast-lane engine).
+
 ## The two pools (by design, not redundancy)
 
 | | window pool (`ChunkBatchWriter`) | job buffer pool (`JobBufferRegistry`) |
@@ -78,6 +113,7 @@ neighbor updates (fastmode-like) and relighting is capped - run
 | `mode` | `buffered` | `buffered` = buffer-first engine; `classic` = per block placement |
 | `undo-mode` | `columnar` | `columnar` = flush-time packed delta stream; `changeset` = stock object change set (full NBT fidelity) |
 | `undo-spool-threshold-mb` | 8 | per job columnar log memory budget before spooling to disk |
+| `fast-lane` | true | compile eligible operations into section fills (see the fast lane section); `false` = per block production everywhere |
 | `debug` | false | seeds the live engine debug toggle (`/awe engine debug on\|off`) |
 | `stream.enabled` | true | flush chunks during production |
 | `stream.window-sections` | 256 | per job live section watermark (256 = 8 MB per job) |
@@ -101,7 +137,9 @@ also turns the engine lines on.
 | tiles/NBT, entities, biomes | classic path + object change set (always) |
 | demanding ops (//regen etc.) | force-flush first, then the op (stock semantics) |
 | columnar log inconsistency | composite falls back to what it has, logs once |
-| `undo-mode: changeset` | both undo seams bypassed; exact pre-KAWE2 undo behavior |
+| `undo-mode: changeset` | both undo seams bypassed; exact pre-KAWE2 undo behavior (also disables the fast lane for ops with undo enabled) |
+| fast lane eligibility miss (mask, limit, pattern, region shape, logging) | that operation runs the per block lane silently-correctly |
+| fast lane budget stall / columnar log failure | job buffers discarded, the whole operation reruns per block (never half-fast) |
 | cancel | unflushed buffers dropped, placed blocks remain undoable |
 
 ## Admin guide
@@ -119,17 +157,21 @@ Any "Direct chunk placement not available: ..." or "AWE engine: buffered
 degraded - the reason is in the line.
 
 `/awe engine` (permission: reload config) prints the live mode, debug
-state, undo mode + spool threshold, buffer/section counters and a heap +
-TPS snapshot. `/awe engine buffered|classic` switches live (classic
-force-flushes in-flight buffers first); `/awe engine debug on|off` flips
-the debug channel.
+state, undo mode + spool threshold, fast-lane availability (the master
+switch, engine mode and direct writer must all agree), buffer/section
+counters and a heap + TPS snapshot. `/awe engine buffered|classic`
+switches live (classic force-flushes in-flight buffers first);
+`/awe engine debug on|off` flips the debug channel.
 
 With debug on, each placer run logs one `[ENGINE] run:` line (blocks,
 wall, tps, budget, queue, buffered drain counters, sections-live vs the
-window) and each finished job one `[ENGINE] job N done:` line
-(blocks/sec plus `heap-peak`, `heap-delta`, `minTPS`, `budget-exceeded`,
-`gc=N/+Mms`). The heap/TPS/gc figures are server-global samples over the
-job's lifetime - meaningful for a single active job, overlapping for
+window) and each finished job one `[ENGINE] job N done:` line with a
+`lane=fast|blocks|mixed` tag (fast = only bulk section fills produced
+the buffer, blocks = only per block writes, mixed = both - e.g. a fast
+job whose budget-refused boxes reran per block) plus blocks/sec,
+`heap-peak`, `heap-delta`, `minTPS`, `budget-exceeded`, `gc=N/+Mms`.
+The heap/TPS/gc figures are server-global samples over the job's
+lifetime - meaningful for a single active job, overlapping for
 concurrent jobs.
 
 Undo files: columnar spools (`columnar.*.bin`) live next to the session

@@ -139,6 +139,17 @@ public final class JobBuffer {
     private final long m_startMillis;
 
     /**
+     * At least one bulk section fill (fast lane compiler) produced into
+     * this buffer
+     */
+    private volatile boolean m_fastFilled;
+
+    /**
+     * At least one per block write produced into this buffer
+     */
+    private volatile boolean m_blockWritten;
+
+    /**
      * The undo capture sink bound at buffer creation (the producer
      * registered it earlier in the SAME write's call stack, so the
      * binding is deterministic). Flushes resolve through this reference
@@ -265,5 +276,34 @@ public final class JobBuffer {
 
     AtomicLong getTotalFlushedCounter() {
         return m_totalFlushed;
+    }
+
+    /**
+     * Record that a bulk section fill (fast lane compiler) produced into
+     * this buffer
+     */
+    void markFastFill() {
+        m_fastFilled = true;
+    }
+
+    /**
+     * Record that a per block write produced into this buffer
+     */
+    void markBlockWrite() {
+        m_blockWritten = true;
+    }
+
+    /**
+     * The production lane of this buffer for the completion line:
+     * "fast" (only bulk fills), "blocks" (only per block writes) or
+     * "mixed" (both - e.g. a fast lane job whose budget-refused boxes
+     * were rerun per block, or an undo replay mixing runs and object
+     * changes)
+     */
+    public String getLane() {
+        if (m_fastFilled) {
+            return m_blockWritten ? "mixed" : "fast";
+        }
+        return "blocks";
     }
 }

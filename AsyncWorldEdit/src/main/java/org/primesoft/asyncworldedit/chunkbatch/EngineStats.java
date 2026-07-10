@@ -186,18 +186,25 @@ public final class EngineStats {
 
     /**
      * The buffered engine completion line.
+     *
+     * @param lane the production lane of the job's buffer: "fast" (bulk
+     * section fills only), "blocks" (per block writes only) or "mixed"
      */
-    public static String bufferedJobLine(int jobId, long blocks, long wallMs) {
-        return jobLine("buffered", jobId, blocks, wallMs);
+    public static String bufferedJobLine(int jobId, String lane, long blocks,
+            long wallMs) {
+        return jobLine("buffered lane=" + lane, jobId, blocks, wallMs);
     }
 
     /**
      * The buffered engine completion line with memory + smoothness telemetry.
+     *
+     * @param lane the production lane of the job's buffer: "fast" (bulk
+     * section fills only), "blocks" (per block writes only) or "mixed"
      */
-    public static String bufferedJobLine(int jobId, long blocks, long wallMs,
-            boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
+    public static String bufferedJobLine(int jobId, String lane, long blocks,
+            long wallMs, boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
             double minTps, int budgetExceeded, long gcCount, long gcTimeMs) {
-        return jobLine("buffered", jobId, blocks, wallMs, hasSamples,
+        return jobLine("buffered lane=" + lane, jobId, blocks, wallMs, hasSamples,
                 peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded,
                 gcCount, gcTimeMs);
     }

@@ -53,6 +53,7 @@ import org.primesoft.asyncworldedit.api.inner.IAsyncWorldEditCore;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.api.taskdispatcher.ITaskDispatcher;
 import org.primesoft.asyncworldedit.api.utils.IAction;
+import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
 import org.primesoft.asyncworldedit.chunkbatch.EngineDebug;
 import org.primesoft.asyncworldedit.chunkbatch.EngineStats;
 import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
@@ -125,6 +126,20 @@ public class EngineCommand {
         player.say(String.format("[ENGINE] undo-mode=%s spool-threshold=%dMB",
                 ConfigProvider.engine().isColumnarUndo() ? "columnar" : "changeset",
                 ConfigProvider.engine().getUndoSpoolThresholdMb()));
+
+        //Fast lane availability: the master switch, the engine mode and
+        //the direct NMS writer must all agree for the compile-to-section
+        //lane to serve eligible operations (this command runs on the main
+        //thread, so the probing isDirectAvailable is safe here)
+        final boolean fastSwitch = ConfigProvider.engine().isFastLane();
+        final boolean direct = ChunkBatchWriter.getInstance().isDirectAvailable();
+        final boolean laneAvailable = fastSwitch
+                && ConfigProvider.isBufferedEngine() && direct;
+        player.say(String.format(
+                "[ENGINE] fast-lane=%s (switch=%s direct-write=%s)",
+                laneAvailable ? "available" : "unavailable",
+                fastSwitch ? "on" : "off",
+                direct ? "ok" : "unavailable"));
 
         player.say(MessageType.CMD_ENGINE_STATUS_COUNTERS.format(
                 Integer.toString(JobBufferRegistry.getInstance().getBufferCount()),

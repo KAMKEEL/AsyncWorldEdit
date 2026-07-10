@@ -377,6 +377,7 @@ public final class JobBufferRegistry {
         }
         buf.getQueuedBlocks().addAndGet(chunk.getCount() - beforeCount);
         buf.getTotalBufferedCounter().incrementAndGet();
+        buf.markBlockWrite();
         return true;
     }
 
@@ -415,6 +416,14 @@ public final class JobBufferRegistry {
      */
     public boolean hasBuffer(UUID uuid, int jobId) {
         return m_buffers.containsKey(new Key(uuid, jobId));
+    }
+
+    /**
+     * The live buffer of a job, null when none exists (test seam for the
+     * lane bookkeeping)
+     */
+    JobBuffer getBuffer(UUID uuid, int jobId) {
+        return m_buffers.get(new Key(uuid, jobId));
     }
 
     /**
@@ -545,6 +554,7 @@ public final class JobBufferRegistry {
         buf.getSectionsHeld().addAndGet(newSections);
         buf.getQueuedBlocks().addAndGet(added);
         buf.getTotalBufferedCounter().addAndGet(added);
+        buf.markFastFill();
         return added;
     }
 
@@ -1059,17 +1069,18 @@ public final class JobBufferRegistry {
         }
         final long total = buf.getTotalFlushed();
         final long wallMs = System.currentTimeMillis() - buf.getStartMillis();
+        final String lane = buf.getLane();
         final IJobEntry job = buf.getJob();
         if (job instanceof JobEntry) {
             final JobEntry je = (JobEntry) job;
             if (je.hasTelemetry()) {
-                log(EngineStats.bufferedJobLine(buf.getJobId(), total, wallMs, true,
+                log(EngineStats.bufferedJobLine(buf.getJobId(), lane, total, wallMs, true,
                         je.getPeakHeap(), je.getHeapDelta(), je.getMinTps(),
                         je.getBudgetExceeded(), je.getGcCount(), je.getGcTimeMs()));
                 return;
             }
         }
-        log(EngineStats.bufferedJobLine(buf.getJobId(), total, wallMs));
+        log(EngineStats.bufferedJobLine(buf.getJobId(), lane, total, wallMs));
     }
 
     /**
