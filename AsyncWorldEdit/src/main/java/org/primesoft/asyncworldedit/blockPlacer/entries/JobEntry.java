@@ -164,18 +164,49 @@ public class JobEntry extends BlockPlacerEntry implements IJobEntry {
     private final AtomicInteger m_budgetExceeded = new AtomicInteger();
 
     /**
+     * Cumulative JVM GC collection count at the job's first sampled run (the
+     * gc-delta baseline). Like the heap fields these are SERVER-GLOBAL (all
+     * collectors of the whole JVM), not isolated to this job.
+     */
+    private volatile long m_startGcCount;
+
+    /**
+     * Cumulative JVM GC time (ms) at the job's first sampled run
+     */
+    private volatile long m_startGcTimeMs;
+
+    /**
+     * Cumulative JVM GC collection count at the job's latest sampled run
+     */
+    private volatile long m_lastGcCount;
+
+    /**
+     * Cumulative JVM GC time (ms) at the job's latest sampled run
+     */
+    private volatile long m_lastGcTimeMs;
+
+    /**
      * Fold one per run server-global sample into this job's telemetry. Called
      * once per placer run for every active job while engine debug is on.
      *
      * @param usedHeap used heap this run (bytes)
      * @param tpsMilli TPS estimate this run, encoded as tps*1000
      * @param budgetExceeded whether this run exhausted the tick budget
+     * @param gcCount cumulative GC collections of the JVM (all collectors)
+     * @param gcTimeMs cumulative GC time of the JVM in ms (all collectors)
      */
-    public void recordTelemetry(long usedHeap, long tpsMilli, boolean budgetExceeded) {
-        //First sample sets the heap-delta baseline
+    public void recordTelemetry(long usedHeap, long tpsMilli, boolean budgetExceeded,
+            long gcCount, long gcTimeMs) {
+        //First sample sets the heap-delta + gc-delta baselines
         if (m_startHeapSet.compareAndSet(false, true)) {
             m_startHeap = usedHeap;
+            m_startGcCount = gcCount;
+            m_startGcTimeMs = gcTimeMs;
         }
+        //The GC counters are monotonic, so the latest sample is the maximum;
+        //samples arrive from the single placer thread (plain volatile writes)
+        m_lastGcCount = gcCount;
+        m_lastGcTimeMs = gcTimeMs;
         //peak = max used heap (lock free)
         for (;;) {
             final long peak = m_peakHeap.get();
@@ -247,6 +278,26 @@ public class JobEntry extends BlockPlacerEntry implements IJobEntry {
      */
     public int getBudgetExceeded() {
         return m_budgetExceeded.get();
+    }
+
+    /**
+     * GC collections during the job: latest sampled cumulative count minus
+     * the count at the job's first sample. SERVER-GLOBAL (see the field note).
+     *
+     * @return the collection count delta, 0 when never sampled
+     */
+    public long getGcCount() {
+        return m_lastGcCount - m_startGcCount;
+    }
+
+    /**
+     * GC time in milliseconds during the job: latest sampled cumulative time
+     * minus the time at the job's first sample. SERVER-GLOBAL.
+     *
+     * @return the GC time delta in ms, 0 when never sampled
+     */
+    public long getGcTimeMs() {
+        return m_lastGcTimeMs - m_startGcTimeMs;
     }
 
     /**

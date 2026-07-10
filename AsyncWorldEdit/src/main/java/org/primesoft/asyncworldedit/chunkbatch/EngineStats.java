@@ -153,10 +153,10 @@ public final class EngineStats {
      * job finished with no run sampled, e.g. debug toggled mid job) only the
      * base line is returned so the extra fields never print misleading zeros.
      *
-     * IMPORTANT: heap-peak/heap-delta/minTPS are SERVER-GLOBAL samples taken
-     * during the job's lifetime, not isolated to this job - meaningful for the
-     * single-active-job A/B (one builder pasting); with concurrent jobs they
-     * overlap.
+     * IMPORTANT: heap-peak/heap-delta/minTPS/gc are SERVER-GLOBAL samples
+     * taken during the job's lifetime, not isolated to this job - meaningful
+     * for the single-active-job A/B (one builder pasting); with concurrent
+     * jobs they overlap.
      *
      * @param engine engine label ("buffered" or "classic")
      * @param jobId the job id
@@ -167,18 +167,21 @@ public final class EngineStats {
      * @param heapDeltaBytes peak used heap minus used heap at job start (bytes)
      * @param minTps minimum TPS estimate seen during the job
      * @param budgetExceeded number of sampled runs that exceeded the tick budget
+     * @param gcCount GC collections during the job (delta over all collectors)
+     * @param gcTimeMs GC time in ms during the job (delta over all collectors)
      * @return the formatted completion line, with the telemetry fields appended
      */
     public static String jobLine(String engine, int jobId, long blocks, long wallMs,
             boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
-            double minTps, int budgetExceeded) {
+            double minTps, int budgetExceeded, long gcCount, long gcTimeMs) {
         final String base = jobLine(engine, jobId, blocks, wallMs);
         if (!hasSamples) {
             return base;
         }
         return base + String.format(
-                "  heap-peak=%s heap-delta=%s minTPS=%.1f budget-exceeded=%d",
-                formatMb(peakHeapBytes), formatMbDelta(heapDeltaBytes), minTps, budgetExceeded);
+                "  heap-peak=%s heap-delta=%s minTPS=%.1f budget-exceeded=%d gc=%d/+%dms",
+                formatMb(peakHeapBytes), formatMbDelta(heapDeltaBytes), minTps,
+                budgetExceeded, gcCount, gcTimeMs);
     }
 
     /**
@@ -193,9 +196,10 @@ public final class EngineStats {
      */
     public static String bufferedJobLine(int jobId, long blocks, long wallMs,
             boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
-            double minTps, int budgetExceeded) {
+            double minTps, int budgetExceeded, long gcCount, long gcTimeMs) {
         return jobLine("buffered", jobId, blocks, wallMs, hasSamples,
-                peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded);
+                peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded,
+                gcCount, gcTimeMs);
     }
 
     /**
@@ -210,8 +214,9 @@ public final class EngineStats {
      */
     public static String classicJobLine(int jobId, long blocks, long wallMs,
             boolean hasSamples, long peakHeapBytes, long heapDeltaBytes,
-            double minTps, int budgetExceeded) {
+            double minTps, int budgetExceeded, long gcCount, long gcTimeMs) {
         return jobLine("classic", jobId, blocks, wallMs, hasSamples,
-                peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded);
+                peakHeapBytes, heapDeltaBytes, minTps, budgetExceeded,
+                gcCount, gcTimeMs);
     }
 }

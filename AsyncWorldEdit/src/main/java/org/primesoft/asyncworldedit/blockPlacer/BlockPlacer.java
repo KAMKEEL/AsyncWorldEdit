@@ -59,6 +59,8 @@ import org.primesoft.asyncworldedit.api.utils.IFuncParamEx;
 import org.primesoft.asyncworldedit.worldedit.AsyncTask;
 import org.primesoft.asyncworldedit.worldedit.CancelabeEditSession;
 
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.util.*;
 import static org.primesoft.asyncworldedit.LoggerProvider.log;
 import org.primesoft.asyncworldedit.api.IPhysicsWatch;
@@ -631,17 +633,34 @@ public class BlockPlacer implements IBlockPlacer {
         final Runtime rt = Runtime.getRuntime();
         final long usedHeap = rt.totalMemory() - rt.freeMemory();
         final long tpsMilli = EngineStats.tpsToMilli(m_tickBudget.getTpsEstimate());
+        //Cumulative GC totals of the whole JVM (all collectors); the job
+        //folds first/last samples into a per job delta. Server-global like
+        //the heap sample, and only ever read while engine debug is on.
+        long gcCount = 0;
+        long gcTimeMs = 0;
+        for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+            final long count = gc.getCollectionCount();
+            if (count > 0) {
+                gcCount += count;
+            }
+            final long time = gc.getCollectionTime();
+            if (time > 0) {
+                gcTimeMs += time;
+            }
+        }
 
         if (ConfigProvider.isBufferedEngine()) {
             //Buffered jobs live in the registry; attribute to their IJobEntry
-            JobBufferRegistry.getInstance().recordTelemetry(usedHeap, tpsMilli, budgetExceeded);
+            JobBufferRegistry.getInstance().recordTelemetry(usedHeap, tpsMilli,
+                    budgetExceeded, gcCount, gcTimeMs);
         } else {
             //Classic jobs live in the per player queues
             synchronized (m_mutex) {
                 for (BlockPlacerPlayer entry : m_blocks.values()) {
                     for (IJobEntry job : entry.getJobs()) {
                         if (job instanceof JobEntry) {
-                            ((JobEntry) job).recordTelemetry(usedHeap, tpsMilli, budgetExceeded);
+                            ((JobEntry) job).recordTelemetry(usedHeap, tpsMilli,
+                                    budgetExceeded, gcCount, gcTimeMs);
                         }
                     }
                 }
@@ -1382,7 +1401,8 @@ public class BlockPlacer implements IBlockPlacer {
             log(EngineStats.classicJobLine(jobEntry.getJobId(),
                     jobEntry.getBlocksPlaced(), wallMs, true,
                     jobEntry.getPeakHeap(), jobEntry.getHeapDelta(),
-                    jobEntry.getMinTps(), jobEntry.getBudgetExceeded()));
+                    jobEntry.getMinTps(), jobEntry.getBudgetExceeded(),
+                    jobEntry.getGcCount(), jobEntry.getGcTimeMs()));
         } else {
             log(EngineStats.classicJobLine(jobEntry.getJobId(),
                     jobEntry.getBlocksPlaced(), wallMs));

@@ -155,26 +155,37 @@ public class EngineStatsTest {
     public void enrichedClassicJobLineFormat() {
         assertEquals(
                 "[ENGINE] job 5 done: classic blocks=329156 wall=2307ms avg=142677 blocks/sec"
-                + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3",
+                + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3 gc=17/+412ms",
                 EngineStats.classicJobLine(5, 329156, 2307, true,
-                        512 * MB, 38 * MB, 19.4, 3));
+                        512 * MB, 38 * MB, 19.4, 3, 17, 412));
     }
 
     @Test
     public void enrichedBufferedJobLineFormat() {
         assertEquals(
                 "[ENGINE] job 5 done: buffered blocks=329156 wall=2307ms avg=142677 blocks/sec"
-                + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3",
+                + "  heap-peak=512MB heap-delta=+38MB minTPS=19.4 budget-exceeded=3 gc=17/+412ms",
                 EngineStats.bufferedJobLine(5, 329156, 2307, true,
-                        512 * MB, 38 * MB, 19.4, 3));
+                        512 * MB, 38 * MB, 19.4, 3, 17, 412));
+    }
+
+    @Test
+    public void enrichedJobLineZeroGcDeltaPrintsExplicitZero() {
+        //a job with no GC activity must show gc=0/+0ms, not drop the field -
+        //"zero collections" IS the buffered engine's proof metric
+        assertEquals(
+                "[ENGINE] job 2 done: buffered blocks=100 wall=50ms avg=2000 blocks/sec"
+                + "  heap-peak=64MB heap-delta=+0MB minTPS=20.0 budget-exceeded=0 gc=0/+0ms",
+                EngineStats.bufferedJobLine(2, 100, 50, true,
+                        64 * MB, 0, 20.0, 0, 0, 0));
     }
 
     @Test
     public void enrichedJobLinesDifferOnlyByEngineLabel() {
         String classic = EngineStats.classicJobLine(9, 128, 64, true,
-                64 * MB, -5 * MB, 18.2, 1);
+                64 * MB, -5 * MB, 18.2, 1, 4, 33);
         String buffered = EngineStats.bufferedJobLine(9, 128, 64, true,
-                64 * MB, -5 * MB, 18.2, 1);
+                64 * MB, -5 * MB, 18.2, 1, 4, 33);
         assertEquals(classic.replace("classic", "ENGINE_LABEL"),
                 buffered.replace("buffered", "ENGINE_LABEL"));
     }
@@ -186,6 +197,6 @@ public class EngineStatsTest {
         String base = EngineStats.classicJobLine(7, 5000, 250);
         assertEquals(base,
                 EngineStats.classicJobLine(7, 5000, 250, false,
-                        999 * MB, 999 * MB, 5.0, 9));
+                        999 * MB, 999 * MB, 5.0, 9, 42, 4200));
     }
 }

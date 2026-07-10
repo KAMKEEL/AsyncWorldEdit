@@ -877,12 +877,16 @@ public final class JobBufferRegistry {
      * @param usedHeap used heap this run (bytes)
      * @param tpsMilli TPS estimate this run, encoded as tps*1000
      * @param budgetExceeded whether this run exhausted the tick budget
+     * @param gcCount cumulative GC collections of the JVM (all collectors)
+     * @param gcTimeMs cumulative GC time of the JVM in ms (all collectors)
      */
-    public void recordTelemetry(long usedHeap, long tpsMilli, boolean budgetExceeded) {
+    public void recordTelemetry(long usedHeap, long tpsMilli, boolean budgetExceeded,
+            long gcCount, long gcTimeMs) {
         for (JobBuffer buf : m_buffers.values()) {
             final IJobEntry job = buf.getJob();
             if (job instanceof JobEntry) {
-                ((JobEntry) job).recordTelemetry(usedHeap, tpsMilli, budgetExceeded);
+                ((JobEntry) job).recordTelemetry(usedHeap, tpsMilli, budgetExceeded,
+                        gcCount, gcTimeMs);
             }
         }
     }
@@ -908,7 +912,7 @@ public final class JobBufferRegistry {
             if (je.hasTelemetry()) {
                 log(EngineStats.bufferedJobLine(buf.getJobId(), total, wallMs, true,
                         je.getPeakHeap(), je.getHeapDelta(), je.getMinTps(),
-                        je.getBudgetExceeded()));
+                        je.getBudgetExceeded(), je.getGcCount(), je.getGcTimeMs()));
                 return;
             }
         }
