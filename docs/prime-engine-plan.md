@@ -351,6 +351,22 @@ committed and tested; this section fixes the adapter seams.
    spool files live next to the session undo files, deleted by
    composite close/dispose + the Cron sweep pattern.
 
+### Phase 3 wiring status (2026-07-10)
+
+All seams above are implemented and the full suite is green (166
+tests): engine.undo-mode config, the flush-time capture plumbing
+(ICaptureSink/ChunkCaptureUtil/NmsChunkWriter.rawReader/
+ChunkBatchWriter.flushJobChunk), the ColumnarUndoRegistry routing
+through the job buffer drain (registrations dropped on prune/discard),
+CompositeChangeSet + ColumnarUndoSink (lazy IThreadSafeIterator +
+IDisposable iterators; dispose keeps the spools for redo, close on
+releaseSession deletes them), the ExtendedChangeSetExtent suppression
+seam with first-suppression log registration, and the budget-refusal
+compensation in AsyncWorld.bufferBlock. Still pending: the adversarial
+review pass, the startup sweep for orphaned columnar spool files
+(crash leftovers; today only releaseSession deletes them) and the
+in-game gate.
+
 Adversarial review pass after implementation (same process that caught
 the 10 findings in the direct-chunk engine), then fixes, then the
 in-game gate.
