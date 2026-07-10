@@ -300,7 +300,38 @@ C:\Users\Kamro\OneDrive\Desktop\WORLDEDIT\AsyncWorldEdit-3.5.4-open-kawe2.jar
   PendingChunkConditionalTest (8), JobBufferReplaceTest (3),
   ChunkBatchWriterReplaceTest (2, end-to-end flush: only matches
   written, capture sink never sees non-matches). Suite: 226 green.
-- [ ] Wave 3: clipboard solids + tests
+- [x] Wave 3: SKIPPED after exploration (2026-07-10), per this plan's
+  own rule (a documented skip beats a risky paste implementation).
+  Findings that drove the decision:
+  1. NO EditSession-method seam exists for //paste on this fork: the
+     AWE-injected excommands ClipboardCommands.paste builds
+     holder.createPaste -> BlockTransformExtent(clipboard, transform)
+     -> ForwardExtentCopy -> Operations.completeLegacy, and the
+     injected AsyncOperationProcessor remaps that operation onto a
+     fresh CancelabeEditSession. The waves 1-2 pattern (override a
+     region method, fall through to super) does not apply; a fast lane
+     would have to intercept at the COMMAND level and replicate job
+     creation, checkAsync, cancel wiring plus the eligibility of the
+     whole operation graph (holder transform - rotated pastes are
+     common - source masks, the fork-added biome copy).
+  2. Paste does NOT compile to section fills: a clipboard holds
+     arbitrary per-slot values, the substrate's bulk API is
+     constant-box fills, and clipboard reads allocate one BaseBlock
+     per block regardless (BlockArrayClipboard API). The achievable
+     win is bounded to skipping the destination extent chain - a
+     hand-rolled per-block producer, NOT a compiler; low single-digit
+     speedup at best versus the fills' orders of magnitude.
+  3. Largest correctness surface of all waves for that bounded win:
+     NBT/tile split preserving write-sequence order, MultiStageReorder
+     bypass for attachments, blacklist/canPlace parity, budget-full
+     rerun (would need to rebuild the ForwardExtentCopy manually for
+     the per-block rerun), ignoreAirBlocks and non-cuboid clipboard
+     regions. //move and //stack share the same shape: their copy
+     half is arbitrary per-slot data (only the source-clear half is a
+     constant fill), so intercepting them means reimplementing WE move
+     semantics for half a win.
+  //paste, //stack and //move stay on the per-block buffered lane,
+  which already streams, bounds memory and captures columnar undo.
 - [ ] Wave 4: section-level undo replay + tests
 - [ ] Wave 5: telemetry (lane= tag), awe.engine.fast-lane master
   switch (NOT yet implemented - the lane is currently always-on when
