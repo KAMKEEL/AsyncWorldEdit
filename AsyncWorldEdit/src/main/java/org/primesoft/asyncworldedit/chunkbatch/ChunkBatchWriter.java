@@ -317,6 +317,21 @@ public class ChunkBatchWriter {
     }
 
     /**
+     * Main thread only: run the one time probe if needed and report
+     * whether the direct NMS section write path is operational. The fast
+     * lane checks this at command time - without the direct path a
+     * bulk-filled buffer would replay per block through the classic
+     * path, losing the point of compiling the operation.
+     */
+    public boolean isDirectAvailable() {
+        if (!m_enabled || m_runtimeDisabled) {
+            return false;
+        }
+        probe();
+        return m_nmsWriter != null;
+    }
+
+    /**
      * Run the one time NMS capability probe. Retries silently while no
      * world is loaded yet; logs one clear line once it ran.
      */

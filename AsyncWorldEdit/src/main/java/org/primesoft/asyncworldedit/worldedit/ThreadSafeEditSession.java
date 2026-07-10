@@ -188,6 +188,13 @@ public class ThreadSafeEditSession extends AweEditSession implements IThreadSafe
     private ChangeSet m_rootChangeSet;
 
     /**
+     * The change set extent of this session's chain (null when undo is
+     * disabled). The fast lane uses it to register a job's columnar undo
+     * log ahead of compiling section fills.
+     */
+    private ExtendedChangeSetExtent m_changeSetExtent;
+
+    /**
      * The AWE core;
      */
     protected final IAsyncWorldEditCore m_aweCore;
@@ -230,6 +237,14 @@ public class ThreadSafeEditSession extends AweEditSession implements IThreadSafe
     @Override
     public ChangeSet getRootChangeSet() {
         return m_rootChangeSet;
+    }
+
+    /**
+     * The session's change set extent, null when undo is disabled for
+     * this session
+     */
+    public ExtendedChangeSetExtent getChangeSetExtent() {
+        return m_changeSetExtent;
     }
 
     protected boolean isAsyncEnabled() {
@@ -336,6 +351,7 @@ public class ThreadSafeEditSession extends AweEditSession implements IThreadSafe
         if (undoDisabled) {
             newChangeSet = new NullChangeSet();
             m_rootChangeSet = newChangeSet;
+            m_changeSetExtent = null;
         } else {
             if (ConfigProvider.undo().storeOnDisk()) {
                 changeSet = new FileChangeSet(core, playerEntry);
@@ -361,6 +377,7 @@ public class ThreadSafeEditSession extends AweEditSession implements IThreadSafe
 
             ExtendedChangeSetExtent extendedChangeSetExtent = new ExtendedChangeSetExtent(null, afterExtent, aweChangeSet, composite);
             ExtentUtils.setExtent(beforeExtent, extendedChangeSetExtent);
+            m_changeSetExtent = extendedChangeSetExtent;
 
             newChangeSet = aweChangeSet;
             m_rootChangeSet = root;

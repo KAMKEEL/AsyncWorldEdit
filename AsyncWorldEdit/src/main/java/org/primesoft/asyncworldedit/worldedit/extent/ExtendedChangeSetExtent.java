@@ -202,6 +202,25 @@ public class ExtendedChangeSetExtent extends ChangeSetExtent {
     }
 
     /**
+     * Ensure a columnar undo log is registered for a job of this session
+     * BEFORE its first buffered write - the fast lane calls this ahead of
+     * compiling section fills so the job's first buffer binds the capture
+     * sink at creation (see JobBufferRegistry.getOrCreate). Returns false
+     * when this session records through the object change set (composite
+     * null = changeset mode or undo off) or the log could not be created;
+     * the fast lane then must not proceed unless undo is off entirely.
+     */
+    public boolean ensureJobLog(UUID uuid, int jobId) {
+        if (m_composite == null) {
+            return false;
+        }
+        if (ColumnarUndoRegistry.resolveOwned(uuid, jobId, m_composite) != null) {
+            return true;
+        }
+        return registerJobLog(uuid, jobId);
+    }
+
+    /**
      * First suppression of a (player, job): create the job's columnar undo
      * log (spooling to the player's undo folder above the configured
      * threshold), register its capture sink for the flush and attach it to

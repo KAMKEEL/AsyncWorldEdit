@@ -59,6 +59,8 @@ import com.sk89q.worldedit.extent.inventory.BlockBag;
 import com.sk89q.worldedit.function.mask.Mask;
 import com.sk89q.worldedit.internal.expression.ExpressionException;
 import com.sk89q.worldedit.patterns.Pattern;
+import com.sk89q.worldedit.patterns.SingleBlockPattern;
+import com.sk89q.worldedit.regions.CuboidRegion;
 import com.sk89q.worldedit.regions.Region;
 import com.sk89q.worldedit.session.SessionManager;
 import com.sk89q.worldedit.util.TreeGenerator;
@@ -66,18 +68,29 @@ import com.sk89q.worldedit.util.eventbus.EventBus;
 import com.sk89q.worldedit.world.biome.BaseBiome;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import javax.annotation.Nullable;
+import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.inner.IAsyncWorldEditCore;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
 import org.primesoft.asyncworldedit.blockPlacer.entries.RedoJob;
 import org.primesoft.asyncworldedit.blockPlacer.entries.UndoJob;
+import org.primesoft.asyncworldedit.chunkbatch.BatchEligibility;
+import org.primesoft.asyncworldedit.chunkbatch.ChunkBatchWriter;
+import org.primesoft.asyncworldedit.chunkbatch.CuboidSplitter;
+import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
+import org.primesoft.asyncworldedit.configuration.BHLevel;
+import org.primesoft.asyncworldedit.configuration.ConfigEngine;
 import org.primesoft.asyncworldedit.configuration.ConfigProvider;
 import org.primesoft.asyncworldedit.injector.validators.StackValidator;
 import org.primesoft.asyncworldedit.platform.api.IScheduler;
 import org.primesoft.asyncworldedit.utils.InOutParam;
 import org.primesoft.asyncworldedit.utils.SchedulerUtils;
 import org.primesoft.asyncworldedit.utils.WaitFor;
+import org.primesoft.asyncworldedit.worldedit.extent.ExtendedChangeSetExtent;
+import org.primesoft.asyncworldedit.worldedit.history.changeset.NullChangeSet;
+import org.primesoft.asyncworldedit.worldedit.world.AbstractWorldWrapper;
 
 /**
  *
@@ -1039,12 +1052,147 @@ public class AsyncEditSession extends ThreadSafeEditSession {
 
     @Override
     public int setBlocks(Region region, BaseBlock block) throws MaxChangedBlocksException {
-        return super.setBlocks(region, block); //To change body of generated methods, choose Tools | Templates.
+        final int fast = trySetBlocksFast(region, block);
+        if (fast >= 0) {
+            return fast;
+        }
+        return super.setBlocks(region, block);
     }
 
     @Override
     public int setBlocks(Region region, Pattern pattern) throws MaxChangedBlocksException {
-        return super.setBlocks(region, pattern); //To change body of generated methods, choose Tools | Templates.
+        if (pattern instanceof SingleBlockPattern) {
+            final int fast = trySetBlocksFast(region,
+                    ((SingleBlockPattern) pattern).getBlock());
+            if (fast >= 0) {
+                return fast;
+            }
+        }
+        return super.setBlocks(region, pattern);
+    }
+
+    /**
+     * The fast lane: compile an eligible cuboid //set straight into the
+     * job's chunk section buffers (bulk array fills - no per block
+     * pipeline). Eligibility is a strict whitelist; ANY miss returns -1
+     * and the caller runs the unchanged per block path. See
+     * docs/section-engine-plan.md.
+     *
+     * @return the async-queued sentinel (0) when the fast lane took the
+     * operation, -1 when the caller must fall through to the per block
+     * path
+     */
+    private int trySetBlocksFast(final Region region, final BaseBlock block) {
+        if (!(region instanceof CuboidRegion)
+                || !ConfigProvider.isBufferedEngine()
+                || getMask() != null
+                || getBlockChangeLimit() != -1
+                || ConfigProvider.blocksHub().getLogBlocks() != BHLevel.Disabled
+                || !ChunkBatchWriter.getInstance().isDirectAvailable()) {
+            return -1;
+        }
+
+        final Vector min = region.getMinimumPoint();
+        final Vector max = region.getMaximumPoint();
+        final int minY = Math.max(0, min.getBlockY());
+        final int maxY = Math.min(255, max.getBlockY());
+        if (minY > maxY || !BatchEligibility.isBatchable(block, minY)) {
+            return -1;
+        }
+
+        //Undo routing: with undo enabled the job MUST have a columnar log
+        //(the fast lane never records per block objects); with undo off
+        //nothing is recorded, matching the per block lane exactly.
+        final ExtendedChangeSetExtent changeSetExtent = getChangeSetExtent();
+        final boolean undoOff = changeSetExtent == null
+                || getRootChangeSet() instanceof NullChangeSet;
+        final ConfigEngine engine = ConfigProvider.engine();
+        if (!undoOff && (engine == null || !engine.isColumnarUndo())) {
+            return -1;
+        }
+
+        //One-time disallowed-blocks check for the constant block (access
+        //checking is off whenever the buffered engine is active, so the
+        //bridge reduces to the blacklist + bypass permissions)
+        if (!m_aweCore.getBlocksHubBridge().canPlace(m_player, getCBWorld(),
+                min, block, block)) {
+            return -1;
+        }
+
+        if (!checkAsync(WorldeditOperations.setBlocks)) {
+            return -1;
+        }
+
+        final int jobId = getJobId();
+        final CancelabeEditSession session = new CancelabeEditSession(this, getMask(), jobId);
+        final JobEntry job = new JobEntry(m_player, session, jobId, "setBlocks");
+        m_blockPlacer.addJob(m_player, job);
+
+        final com.sk89q.worldedit.world.World world = getWorld();
+        final com.sk89q.worldedit.world.World weWorld
+                = world instanceof AbstractWorldWrapper
+                        ? ((AbstractWorldWrapper) world).getWorld() : world;
+        final IWorld aweWorld = getCBWorld();
+        final UUID uuid = m_player == null ? null : m_player.getUUID();
+        final boolean needLog = !undoOff;
+        final int id = block.getType();
+        final int data = block.getData();
+        final int minX = min.getBlockX();
+        final int minZ = min.getBlockZ();
+        final int maxX = max.getBlockX();
+        final int maxZ = max.getBlockZ();
+
+        SchedulerUtils.runTaskAsynchronously(m_schedule, new AsyncTask(session, m_player,
+                "setBlocks", m_blockPlacer, job) {
+            @Override
+            public int task(final CancelabeEditSession session)
+                    throws MaxChangedBlocksException {
+                m_wait.checkAndWait(null);
+
+                if (needLog && !changeSetExtent.ensureJobLog(uuid, jobId)) {
+                    //No columnar log (creation failed): keep undo correct
+                    //through the per block lane
+                    return session.setBlocks(region, block);
+                }
+
+                final JobBufferRegistry registry = JobBufferRegistry.getInstance();
+                final long[] written = {0};
+                final boolean complete = CuboidSplitter.forEachChunkBox(
+                        minX, minY, minZ, maxX, maxY, maxZ,
+                        new CuboidSplitter.IChunkBoxVisitor() {
+                            @Override
+                            public boolean visit(int cx, int cz, int x0, int y0,
+                                    int z0, int x1, int y1, int z1) {
+                                if (session.isCanceled()) {
+                                    return false;
+                                }
+                                final int r = registry.fillChunkBox(m_player, jobId,
+                                        weWorld, aweWorld, job,
+                                        x0, y0, z0, x1, y1, z1, id, data, false);
+                                if (r < 0) {
+                                    return false;
+                                }
+                                written[0] += r;
+                                return true;
+                            }
+                        });
+
+                if (!complete) {
+                    if (session.isCanceled()) {
+                        //Cancel parity: the drain discards the unflushed
+                        //buffers of a canceled job
+                        return (int) written[0];
+                    }
+                    //Budget wall mid-compile: nothing half-fast may flush.
+                    //Discard and rerun the WHOLE operation per block.
+                    registry.discardJob(uuid, jobId);
+                    return session.setBlocks(region, block);
+                }
+                return (int) Math.min(Integer.MAX_VALUE, written[0]);
+            }
+        });
+
+        return 0;
     }
 
     @Override
