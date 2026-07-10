@@ -114,12 +114,15 @@ public final class ColumnarUndoRegistry {
      *
      * @param jobId the job id, must be &gt;= 0 (loose writes are never
      * captured)
+     * @return true when this registration won; false when the job already
+     * has a sink (or the arguments are invalid) - the caller should use
+     * {@link #get} and drop its own instance
      */
-    public static void register(UUID player, int jobId, ICaptureSink sink) {
+    public static boolean register(UUID player, int jobId, ICaptureSink sink) {
         if (jobId < 0 || sink == null) {
-            return;
+            return false;
         }
-        s_sinks.putIfAbsent(new Key(player, jobId), sink);
+        return s_sinks.putIfAbsent(new Key(player, jobId), sink) == null;
     }
 
     /**
