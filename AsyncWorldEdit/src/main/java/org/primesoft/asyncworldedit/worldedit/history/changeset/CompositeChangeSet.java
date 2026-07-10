@@ -74,10 +74,14 @@ import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
  * the per block change objects never exist all at once.
  *
  * <p>
- * Ordering correctness: within one source the order is already correct
- * (object = insertion order, columnar = flush order with first capture per
- * slot). A position can appear in BOTH sources only as a classic write
- * followed by a buffered rewrite: the reverse direction is excluded
+ * Ordering correctness (columnar-then-object replay, an ACCEPTED
+ * deviation from the plan's original global-sequence merge - recorded in
+ * docs/prime-engine-plan.md): within one source the order is already
+ * correct (object = insertion order, columnar = flush order with first
+ * capture per slot plus redo-only rewrite segments in append order, so a
+ * cross-flush rewrite forward-replays to its LAST value while backward
+ * skips it). A position can appear in BOTH sources only as a classic
+ * write followed by a buffered rewrite: the reverse direction is excluded
  * because a classic write over a still-buffered value clears the pending
  * block (clearBuffered), so the flush never captures that position, and a
  * budget-refused buffered write compensates into the OBJECT change set
@@ -86,7 +90,9 @@ import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarUndoRegistry;
  * and the object changes second: the later buffered rewrite is undone
  * before the earlier classic write, so the classic write's old value wins
  * - correct. Forward (redo) is the exact mirror: object first, columnar
- * second.</p>
+ * second - the buffered rewrite lands last and, within the columnar
+ * source, its redo-only rewrite segments land after its first capture, so
+ * every position ends at its final value.</p>
  *
  * <p>
  * The iterators implement {@link ThreadSafeChangeSet.IThreadSafeIterator}

@@ -362,14 +362,91 @@ CompositeChangeSet + ColumnarUndoSink (lazy IThreadSafeIterator +
 IDisposable iterators; dispose keeps the spools for redo, close on
 releaseSession deletes them), the ExtendedChangeSetExtent suppression
 seam with first-suppression log registration, and the budget-refusal
-compensation in AsyncWorld.bufferBlock. Still pending: the adversarial
-review pass, the startup sweep for orphaned columnar spool files
-(crash leftovers; today only releaseSession deletes them) and the
-in-game gate.
+compensation in AsyncWorld.bufferBlock. Still pending after wiring:
+the adversarial review pass, the startup sweep for orphaned columnar
+spool files and the in-game gate.
 
 Adversarial review pass after implementation (same process that caught
 the 10 findings in the direct-chunk engine), then fixes, then the
 in-game gate.
+
+### Phase 3 adversarial review results and fixes (2026-07-10)
+
+The independent review returned 3 MAJOR + 3 minor + 3 info findings
+(clean on: tee airtightness across all seven write paths, replay
+bypass, the undo half of first-capture, RLE format, changeset-mode
+fallback exactness, thread ownership, cancel semantics). All findings
+fixed, each with regression tests, suite green:
+
+1. MAJOR, //redo restored stale intermediates - reachable by a plain
+   //move or //stack with source/destination overlap under default
+   streaming: a slot rewritten across a flush boundary early-returned
+   on the first-capture bit BEFORE recording anything, freezing the
+   segment's new columns at the FIRST flush's value (redo rewrote the
+   overlap to air holes; undo was always correct). FIX (design chosen:
+   redo-only rewrite segments, not an in-memory overlay - they spool
+   like every segment, cost nothing on undo and keep the job-end seal
+   free to drop all transient state): a re-capture is recorded into a
+   redo-only segment appended after the flush's normal segment, flagged
+   in the segment header; forward replay emits it in append order (the
+   last flushed value wins), backward replay and the composite undo
+   iterator skip it.
+2. MAJOR, routine disk leak of columnar spool files: sessions that
+   never reached releaseSession (shutdown/crash leftovers, WorldEdit's
+   session expiration timer removing offline sessions behind the AWE
+   session manager's back, keepSessionOnLogoutFor < 0) leaked their
+   spools forever, and the Cron cleanup only matches the ts prefix.
+   FIX: ColumnarSpoolRegistry - logs register their spool file
+   (weak-referenced, so an abandoned session cannot pin it) and the
+   Cron undo cleanup sweeps every non-live columnar.*.bin: on plugin
+   enable that is ALL of them (no session exists yet), periodically it
+   catches runtime leftovers. The sweep ignores keepUndoFileFor: an
+   orphaned spool has no on-disk segment directory and can never be
+   reloaded. The immediate-logout seam (AsyncSessionManager.remove ->
+   cleanupSession -> history clear -> releaseSession) already closed
+   composites and is now pinned by lifecycle tests.
+3. MAJOR, job-id reuse binding a new job to a dead session's log
+   (getNextJobId is max(live)+1; a sink registered at first suppression
+   whose job never created a buffer was only removed at
+   releaseSession). FIX, defense in depth: registry entries carry the
+   owning composite's identity and the suppression seam evicts + seals
+   foreign hits; the block placer unregisters a removed job's sink when
+   no buffer exists for it; every buffer binds its capture sink at
+   creation so flushes never resolve a reused id against the live
+   registry. Unregistering seals the log (ICaptureSink.jobDone) - late
+   captures fail loudly instead of appending to sealed history.
+4. minor, a capture read-miss left the first-capture bit unset, so a
+   re-flush captured the job's own intermediate as "old". FIX: the miss
+   marks the bit and drops the slot from undo entirely (missing entry
+   over wrong entry), one-time miss log kept.
+5. minor, memory retention until releaseSession (bitsets + unspooled
+   runs x historySize). FIX: the job-end seal drops the bitsets and
+   force-spills the in-memory segments; a closed job's history holds
+   only the segment directory + the spool file handle.
+6. minor, 16-bit run encoding vs the 20-bit slot-encoding headroom.
+   FIX: capture masks ids to 16 bits with a one-time warning; the id
+   ceiling invariant is documented at SectionMath.encodeSlot.
+7. info: the pre-existing SerializableSessionList.set() wrong-argument
+   bug fixed (dangerous once releaseSession deletes spools); the
+   MultiStageReorder destroy-first protection (loose-buffer keying by
+   the BLOCK wrapper's job id) documented at the keying site and pinned
+   by test; the columnar-then-object replay deviation recorded below.
+
+ACCEPTED DEVIATION - composite replay order: the plan specified a
+global-sequence merge of the columnar and object sources; the
+implementation replays columnar-then-object (backward) and
+object-then-columnar (forward). This is recorded as accepted: a
+position can sit in both sources only as classic-write-then-buffered-
+rewrite (a classic write over a buffered value clears the pending
+block, and budget-refused writes compensate into the OBJECT change
+set), so backward undoes the buffered rewrite before the classic
+write (the classic old value wins - correct) and forward mirrors it.
+Within the columnar source the finding-1 fix completes the argument:
+a cross-flush rewrite's redo-only segments replay after its first
+capture in append order, so forward iteration ends every position at
+its final value and backward iteration only ever emits first-capture
+old values. The seq ranges each segment still carries would support a
+true merge if a future source ever violates these exclusions.
 
 In-game gate: //set 1M+ then //undo restores exactly (spot NEID ids +
 metas); undo memory visible in telemetry (see Phase 4 gc metric);
@@ -435,8 +512,10 @@ flat.
 | Streaming ordering (rewrite-after-flush, attachments) | detach-before-flush contract + last-write tests + per-pass deferral |
 | First-capture across window evictions | per-job per-section bitsets, exact-value tests |
 | NEID/vanilla/compact layout drift | name-first probe + sanity checks extended to the read path |
-| Undo file lifecycle (the keepUndoFileFor trap) | job-close cleanup + startup sweep + integrity fallback |
-| Same-position cross-source rewrites in ONE job (Phase 3 residual, adversarial review finding) | a position written buffered-then-classic (or the flushed variant) inside one operation sits in both undo sources with conflicting order needs; real WE ops write each position once, so accepted + documented - undo-mode: changeset is the exact-fidelity escape hatch; future fix = sequence-stamped object changes |
+| Undo file lifecycle (the keepUndoFileFor trap) | job-close cleanup + liveness-guarded startup/periodic orphan sweep (ColumnarSpoolRegistry) + integrity fallback |
+| Cross-flush same-position rewrites (Phase 3 review finding 1 - FIXED) | the earlier register entry framed this as an exotic mixed-type residual; the review proved it plainly reachable by a normal //move or //stack with overlapping source/destination under default streaming (a window eviction between the two writes). Undo was never wrong; //redo restored the first flush's value (air holes). Fixed by redo-only rewrite segments: forward replay ends at the final value, backward replay skips them - exact-value tests cover both interleavings, spooled and in-memory |
+| Columnar spool disk leak on logout (Phase 3 review finding 2 - FIXED) | sessions that never reach releaseSession (shutdown/crash, WE's session expiration timer, keepSessionOnLogoutFor < 0) no longer strand spools: weak-referenced liveness registry + orphan sweep at startup (deletes all) and every Cron cleanup pass |
+| Job-id reuse binding a new job to a dead session's log (Phase 3 review finding 3 - FIXED) | owner-bound registry entries (evict + seal foreign hits), proactive unregister on job removal without a buffer, capture sink bound to the buffer at creation. NARROW RESIDUAL, documented: if a new command reuses an id while the OLD job's buffer is still mid-drain (carry-over) the old buffer's remaining flushes hit the sealed sink and are refused with one log line (old undo partial but never corrupted; the new job's log stays correct) |
 | Agent/session interruptions | this plan doc + incremental commits let any session resume |
 
 ## Sequencing and gates
