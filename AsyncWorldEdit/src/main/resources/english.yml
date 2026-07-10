@@ -106,6 +106,3 @@ EX_CMD_SCHEMATIC_INVALID_FORMAT: "[RED]Invalid schematic data."
 EX_CMD_SCHEMATIC_INFO: "[YELLOW]Schematic: [WHITE]%1$s\n[YELLOW] Size: [WHITE]%2$s[YELLOW]x[WHITE]%3$s[YELLOW]x[WHITE]%4$s\n[YELLOW] Blocks: [WHITE]%5$s [YELLOW](Extended: [WHITE]%6$s[YELLOW]), Data: [WHITE]%7$s\n[YELLOW] TileEntities: [WHITE]%8$s\n [YELLOW]Entities: [WHITE]%9$s"
 EX_CMD_SCHEMATIC_LOADED: "[YELLOW]Schematic loaded."
 EX_CMD_SCHEMATIC_NO_ORIGIN: "[YELLOW]No origin in schematic. Removing entities."
-#The extended commands - chunk replace
-EX_CMD_CHUNK_REPLACE_CHUNKS: "[YELLOW]Processing [WHITE]%1$s[YELLOW] chunks..."
-EX_CMD_CHUNK_REPLACE_PROGRESS: "[YELLOW]Processing chunk [WHITE]%1$s[YELLOW]/[WHITE]%2$s"

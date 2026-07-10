@@ -47,7 +47,6 @@
  */
 package org.primesoft.asyncworldedit.excommands;
 
-import org.primesoft.asyncworldedit.excommands.commands.ChunkCommands;
 import org.primesoft.asyncworldedit.excommands.commands.RegionCommands;
 import org.primesoft.asyncworldedit.excommands.commands.SchematicCommands;
 import com.sk89q.worldedit.WorldEdit;
@@ -115,16 +114,11 @@ public class CommandsInjector {
         builder.registerMethodsAsCommands(dispatcher, new FillCommands(worldEdit, api));        
         injectCommmands(builder, dispatcher.get("schematic"), new SchematicCommands(worldEdit, api));
 
-        if (api.getDirectChunkAPI() != null) {
-            SimpleDispatcher groupChunks = createGroup("Chunk manipulation commands");
-            builder.registerMethodsAsCommands(groupChunks, new ChunkCommands(api));
-            dispatcher.registerCommand(groupChunks, "chunk");
-            log("Direct chunk commands...enabled");
-        } else {
-            log("Direct chunk commands...disabled");
-        }
+        //The /chunk command group belonged to the premium DirectChunkAPI
+        //subsystem; on this fork the API was always null (no 1.7.10 adapter)
+        //so the commands were never registered - the subsystem was removed.
 
-        //SimpleDispatcher groupTest = createGroup("Test commands");                
+        //SimpleDispatcher groupTest = createGroup("Test commands");
         //builder.registerMethodsAsCommands(groupTest, new TestCommands(aweMain.getAPI()));
         //dispatcher.registerCommand(groupTest, "test");
         platform.registerCommands(dispatcher);

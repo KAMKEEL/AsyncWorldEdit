@@ -69,7 +69,6 @@ import org.primesoft.asyncworldedit.strings.MessageProvider;
 import org.primesoft.asyncworldedit.strings.MessageType;
 import org.primesoft.asyncworldedit.taskdispatcher.TaskDispatcher;
 import org.primesoft.asyncworldedit.utils.ExceptionHelper;
-import org.primesoft.asyncworldedit.directChunk.relighter.BlockReligher;
 
 import static org.primesoft.asyncworldedit.LoggerProvider.log;
 import org.primesoft.asyncworldedit.api.IAdapter;
@@ -80,7 +79,6 @@ import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerManager;
 import org.primesoft.asyncworldedit.api.progressDisplay.IProgressDisplayManager;
 import org.primesoft.asyncworldedit.api.taskdispatcher.ITaskDispatcher;
-import org.primesoft.asyncworldedit.adapter.AdapterProvider;
 import org.primesoft.asyncworldedit.api.IAweOperations;
 import org.primesoft.asyncworldedit.api.changesetSerializer.ISerializerManager;
 import org.primesoft.asyncworldedit.api.inner.IAsyncWorldEditCore;
@@ -94,14 +92,11 @@ import org.primesoft.asyncworldedit.platform.api.IPlatform;
 import org.primesoft.asyncworldedit.api.IWorld;
 import org.primesoft.asyncworldedit.api.classScanner.IClassScannerOptions;
 import org.primesoft.asyncworldedit.api.directChunk.IDirectChunkCommands;
-import org.primesoft.asyncworldedit.api.inner.IBlockRelighter;
 import org.primesoft.asyncworldedit.api.inner.IBlocksHubBridge;
 import org.primesoft.asyncworldedit.api.inner.ICron;
-import org.primesoft.asyncworldedit.api.inner.IInitializableAdapter;
 import org.primesoft.asyncworldedit.api.inner.IInnerDirectChunkAPI;
 import org.primesoft.asyncworldedit.api.inner.IMessageProvider;
 import org.primesoft.asyncworldedit.blockshub.BlocksHubBridge;
-import org.primesoft.asyncworldedit.excommands.chunk.DirectChunkCommands;
 import org.primesoft.asyncworldedit.progressDisplay.ProgressDisplayManager;
 import org.primesoft.asyncworldedit.versionChecker.VersionChecker;
 
@@ -120,9 +115,7 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
     private final PlayerManager m_playerManager = new PlayerManager(this);
     private IProgressDisplayManager m_progressDisplay;
     private InjectorBridge m_aweInjector;
-    private IAdapter m_nativeAdapter;
     private IInnerSerializerManager m_changesetSerializer;
-    private IDirectChunkCommands m_directChunkCommands;
     private final IMessageProvider m_messageProvider;
     private final IBlocksHubBridge m_blocksHubBridge;
     
@@ -167,13 +160,16 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
     }
 
     /**
-     * Get teh native API adapter
+     * Get the native API adapter. Always null on this fork: the premium
+     * DirectChunkAPI adapters only matched Bukkit 1.8-1.12, none apply to
+     * the 1.7.10 target and the subsystem was removed. The API stub stays
+     * for contract compatibility.
      *
-     * @return
+     * @return always null
      */
     @Override
     public IAdapter getAdapter() {
-        return m_nativeAdapter;
+        return null;
     }
 
     @Override
@@ -181,30 +177,36 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
         return this;
     }
 
-    @Override
-    public IDirectChunkCommands getChunkOperations() {
-        return m_directChunkCommands;
-    }
-    
     /**
-     * Get the direct chunk API
+     * Direct chunk commands were part of the removed premium DirectChunkAPI
+     * subsystem; the API stub stays for contract compatibility.
      *
-     * @return
+     * @return always null
      */
     @Override
-    public IDirectChunkAPI getDirectChunkAPI() {
-        return (m_nativeAdapter != null)
-                ? m_nativeAdapter.getDirectChunkAPI() : null;
+    public IDirectChunkCommands getChunkOperations() {
+        return null;
     }
 
     /**
-     * Get the direct chunk API
+     * Get the direct chunk API. Always null on this fork (see
+     * {@link #getAdapter}); callers already handle the null.
      *
-     * @return
+     * @return always null
+     */
+    @Override
+    public IDirectChunkAPI getDirectChunkAPI() {
+        return null;
+    }
+
+    /**
+     * Get the inner direct chunk API. Always null on this fork.
+     *
+     * @return always null
      */
     @Override
     public IInnerDirectChunkAPI getInnerDirectChunkAPI() {
-        return (IInnerDirectChunkAPI) getDirectChunkAPI();
+        return null;
     }
 
     /**
@@ -339,17 +341,6 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
 
         m_changesetSerializer = new SerializerManager(this);
 
-        m_nativeAdapter = AdapterProvider.get(m_platform);
-        if (m_nativeAdapter != null) {
-
-            if (m_nativeAdapter instanceof IInitializableAdapter) {
-                ((IInitializableAdapter) m_nativeAdapter).initialize(m_dispatcher, m_blocksHubBridge);
-            }
-            m_directChunkCommands = new DirectChunkCommands(this);
-        } else {
-            m_directChunkCommands = null;
-        }
-
         setPlotMeFix(new NullFix());
 
         try {
@@ -379,12 +370,6 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
         }
 
         m_platform.getChunkWatcher().setTaskDispat(m_dispatcher);
-
-        IInnerDirectChunkAPI dcApi = getInnerDirectChunkAPI();
-        IBlockRelighter bRelighter = dcApi != null ? dcApi.getBlockRelighter() : null;
-        if (bRelighter != null) {
-            bRelighter.initialize(m_platform);
-        }
 
         m_isInitialized = true;
 
@@ -428,12 +413,6 @@ public class AsyncWorldEditCore implements IAsyncWorldEditCore, IAweOperations {
             m_blockPlacer.stop();
             m_cron.stop();
             m_dispatcher.stop();
-
-            IInnerDirectChunkAPI dcApi = getInnerDirectChunkAPI();
-            IBlockRelighter bRelighter = dcApi != null ? dcApi.getBlockRelighter() : null;
-            if (bRelighter != null) {
-                bRelighter.stop();
-            }
 
             m_isInitialized = false;
 

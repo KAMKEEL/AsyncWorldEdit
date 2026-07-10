@@ -143,11 +143,6 @@ public class ConfigProvider {
     private static File m_undoFolder;
     
     /**
-     * The DIrectChunk API configuration
-     */
-    private static ConfigDirectChunkApi m_configDCApi;
-    
-    /**
      * The overrides for AWE mode
      */
     private static ConfigOverrides m_overrides;
@@ -294,16 +289,8 @@ public class ConfigProvider {
     }
 
     /**
-     * Get the DirectChunk configuration
-     * @return 
-     */
-    public static ConfigDirectChunkApi directChunk() {
-        return m_configDCApi;
-    }
-    
-    /**
      * Get the renderer configuration
-     * @return 
+     * @return
      */
     public static ConfigRenderer renderer() {
         return m_configRenderer;
@@ -444,7 +431,6 @@ public class ConfigProvider {
         m_configRenderer = new ConfigRenderer(mainSection.getConfigurationSection("rendering"));
         m_configBlocksHub = new ConfigBlocksHub(mainSection.getConfigurationSection("blocksHub"));
         m_configDispatcher = new ConfigDispatcher(mainSection.getConfigurationSection("dispatcher"));
-        m_configDCApi = new ConfigDirectChunkApi(mainSection.getConfigurationSection("directChunk"));
         m_configPermission = new ConfigPermission(mainSection.getConfigurationSection("permissions"));
         m_configUndo = new ConfigUndo(mainSection.getConfigurationSection("undo"));
         m_configMessages = new ConfigMessages(mainSection.getConfigurationSection("messages"));
