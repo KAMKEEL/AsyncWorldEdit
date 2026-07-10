@@ -59,6 +59,7 @@ import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerManager;
 import org.primesoft.asyncworldedit.api.utils.IInOutParam;
 import org.primesoft.asyncworldedit.changesetSerializer.StreamProvider;
+import org.primesoft.asyncworldedit.chunkbatch.undo.ColumnarSpoolRegistry;
 import org.primesoft.asyncworldedit.configuration.ConfigMessages;
 import org.primesoft.asyncworldedit.configuration.ConfigProvider;
 import org.primesoft.asyncworldedit.configuration.ConfigUndo;
@@ -180,12 +181,38 @@ public final class Cron implements ICron {
         }
     }
 
+    /**
+     * Delete orphaned columnar undo spool files from the undo tree. On
+     * startup no session exists yet, so every columnar file is a crash or
+     * shutdown leftover (mirroring how the startup pass treats the ts
+     * files); the periodic pass catches sessions that never went through
+     * releaseSession (e.g. WorldEdit's own session expiration timer
+     * bypassing the AWE session manager). Unlike the ts files an orphaned
+     * columnar spool can never be reloaded (the segment directory lives
+     * only in memory), so the sweep ignores keepUndoFileFor on purpose.
+     */
+    private void sweepColumnarOrphans(boolean startup) {
+        try {
+            final int deleted = ColumnarSpoolRegistry.sweepOrphans(
+                    ConfigProvider.getUndoFolder());
+            if (deleted > 0) {
+                log(String.format(
+                        "Undo cleanup: removed %1$d orphaned columnar undo file(s)%2$s.",
+                        deleted, startup ? " left over from the last run" : ""));
+            }
+        } catch (IOException ex) {
+            ExceptionHelper.printException(ex, "Unable to sweep columnar undo files.");
+        }
+    }
+
     private void runUndoCleanup(boolean startup) {
         final ConfigUndo undoConfig = ConfigProvider.undo();
 
         if (undoConfig == null) {
             return;
         }
+
+        sweepColumnarOrphans(startup);
 
         final long keepUndoFor = undoConfig.keepUndoFileFor();
         if (keepUndoFor < 0) {

@@ -282,6 +282,10 @@ public final class ColumnarUndoLog {
     public ColumnarUndoLog(File spoolFile, long spoolThresholdBytes) {
         m_spoolFile = spoolFile;
         m_spoolThresholdBytes = Math.max(0, spoolThresholdBytes);
+
+        //Liveness for the orphan sweep: registered before the file exists,
+        //unregistered by close (which deletes the file)
+        ColumnarSpoolRegistry.register(spoolFile, this);
     }
 
     /**
@@ -714,5 +718,6 @@ public final class ColumnarUndoLog {
         if (m_spoolFile != null && m_spoolFile.exists()) {
             m_spoolFile.delete();
         }
+        ColumnarSpoolRegistry.unregister(m_spoolFile);
     }
 }
