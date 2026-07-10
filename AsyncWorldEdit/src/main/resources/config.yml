@@ -46,6 +46,9 @@ awe:
       window-sections: 256
       #a chunk not written to for this many placer runs is flushed
       #(40 runs = ~2 seconds at rendering interval 1)
+      #jobs too small to hit a window watermark wait out this clock, so
+      #small edits appear ~2s late - lower it (10 = ~0.5s) for snappier
+      #small jobs; big-job throughput is unaffected
       stale-runs: 40
   rendering:
     #amount of time (in ticks) the server will place a chunk of blocks

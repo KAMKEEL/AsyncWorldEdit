@@ -589,6 +589,44 @@ pays the per block queue entries; D == C. If A's gc count spikes,
 grab `/awe engine` right after the job - the section counters tell
 whether the budget or the changeset was the allocator.
 
+#### First results (uncapped heap, 2026-07-10)
+
+3.55M-block `//set` of NEID id 15216, same selection and same session
+for both rows, uncapped 6.8 GB heap (NOT the constrained -Xmx2G pass
+of the runbook - that one is still open, so these rows are recorded
+here instead of the median table above).
+
+| mode | //set blocks/sec | minTPS | budget-exc | gc | //undo | notes |
+|------|-----------------|--------|------------|----|--------|-------|
+| A buffered+columnar | 178,920 (19.9s) | 19.3 | 0 | 13/+302ms | ~45s, one 3s stall early | stall suspected major GC right after the set peaked heap at 5.7GB |
+| C classic+changeset | 91,353 (38.9s) | 3.9 | 39 | 34/+1105ms | 65.7s, minTPS 4.2, gc 50/+9,577ms, heap-delta +2.7GB | |
+
+- 1.96x set throughput A over C, and the qualitative story is
+  stronger than the ratio: the server stayed playable under A
+  (minTPS 19.3, zero budget-exceeded runs) and was effectively frozen
+  under C (minTPS 3.9, 39 exceeded runs). Zero errors, fallbacks,
+  capture misses or truncation warnings in either log; the NEID
+  16-bit id path (15216 > 4095) held under load.
+- Small-job latency (operational note): a 55k `//replace` favors
+  CLASSIC on wall time, because the buffered flush waits out the
+  staleness clock (~2s at stale-runs 40) on jobs too small to hit a
+  window watermark - while production itself runs ~27k blocks/sec due
+  to replace's per block old-read through the dispatcher (upstream
+  WorldEdit cost, both engines pay it). Remedy for
+  snappiness-sensitive servers: lower `awe.engine.stream.stale-runs`
+  (40 -> 10 = ~0.5s); big-job throughput is unaffected since large
+  jobs flush on watermarks, not on the staleness clock. Recorded in
+  the config.yml comment as well.
+- Phase 5 candidate (future work, NOT implemented): undo replay
+  currently materializes a BlockChange plus two BaseBlocks per block
+  through WorldEdit's Change interface (~79k blocks/sec replay vs
+  179k set in row A); replaying the columnar RLE runs directly
+  through the buffered write path would remove that per block object
+  cost entirely.
+- Still open per this runbook: row B (buffered+changeset), row D
+  (sanity), the -Xmx2G constrained pass, and the terrain-exactness
+  eyeball check (the Phase 3 in-game gate).
+
 ## Operation coverage matrix
 
 | Operation | Path | Notes / test |
