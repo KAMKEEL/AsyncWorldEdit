@@ -1170,7 +1170,7 @@ public final class JobBufferRegistry {
     /**
      * Test seam: forget the current thread's producer buffer
      */
-    void clearProducerThreadLocal() {
+    public void clearProducerThreadLocal() {
         m_producer.remove();
     }
 }

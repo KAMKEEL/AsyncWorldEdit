@@ -218,15 +218,10 @@ public final class PendingChunk {
                 m_sectionCount++;
             }
 
-            final int before = section.getCount();
-            for (int y = fy0; y <= fy1; y++) {
-                for (int z = z0; z <= z1; z++) {
-                    for (int x = x0; x <= x1; x++) {
-                        section.set(SectionMath.sectionIndex(x, y, z), id, data, notify, seq);
-                    }
-                }
-            }
-            added += section.getCount() - before;
+            added += section.fillBox(SectionMath.blockToLocal(x0), fy0 & 0xF,
+                    SectionMath.blockToLocal(z0), SectionMath.blockToLocal(x1),
+                    fy1 & 0xF, SectionMath.blockToLocal(z1),
+                    id, data, notify, seq);
         }
 
         m_count += added;

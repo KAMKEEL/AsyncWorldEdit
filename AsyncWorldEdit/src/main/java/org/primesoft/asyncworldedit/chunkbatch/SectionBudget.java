@@ -56,7 +56,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * A pending section buffer costs a fixed amount of memory (the slot and
  * sequence arrays, 32 KB), so bounding the number of live buffers bounds
- * the total batch memory (the default of 1024 sections caps it at 32 MB).
+ * the total batch memory (the transaction default of 4096 sections caps it
+ * at 128 MB). A multi-million-block edit must remain whole in this pool;
+ * falling back during production recreates the sliced visual commits this
+ * engine is intended to eliminate.
  * Writers that would need a new section buffer beyond the cap must fall
  * back to the classic per block path, which naturally throttles admission
  * against the queue limits and the tick budget.
@@ -71,7 +74,7 @@ public final class SectionBudget {
     /**
      * Default upper bound of allocated pending section buffers
      */
-    public static final int DEFAULT_MAX_SECTIONS = 1024;
+    public static final int DEFAULT_MAX_SECTIONS = 4096;
 
     /**
      * The budget shared by all production writers

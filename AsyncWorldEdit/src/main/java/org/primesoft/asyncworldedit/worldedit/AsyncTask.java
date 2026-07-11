@@ -52,6 +52,7 @@ import org.primesoft.asyncworldedit.api.MessageSystem;
 import org.primesoft.asyncworldedit.api.blockPlacer.IBlockPlacer;
 import org.primesoft.asyncworldedit.api.playerManager.IPlayerEntry;
 import org.primesoft.asyncworldedit.blockPlacer.entries.JobEntry;
+import org.primesoft.asyncworldedit.chunkbatch.JobBufferRegistry;
 import org.primesoft.asyncworldedit.strings.MessageType;
 
 /**
@@ -68,7 +69,14 @@ public abstract class AsyncTask extends BaseTask {
     @Override
     protected Object doRun() throws MaxChangedBlocksException, IllegalArgumentException
     {
-        return task(m_cancelableEditSession);
+        try {
+            return task(m_cancelableEditSession);
+        } finally {
+            //The transaction overlay belongs only to this producer. Bukkit
+            //reuses async worker threads; retaining it would let a later
+            //unrelated operation read stale pending blocks from this job.
+            JobBufferRegistry.getInstance().clearProducerThreadLocal();
+        }
     }
 
     @Override

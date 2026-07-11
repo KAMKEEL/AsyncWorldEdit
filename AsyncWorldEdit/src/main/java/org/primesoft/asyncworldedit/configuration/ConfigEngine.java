@@ -74,7 +74,7 @@ public class ConfigEngine {
     /**
      * Default for the region streamed flushing toggle
      */
-    public static final boolean DEFAULT_STREAM_ENABLED = true;
+    public static final boolean DEFAULT_STREAM_ENABLED = false;
 
     /**
      * Default per job live section window (256 sections = 8 MB per job)

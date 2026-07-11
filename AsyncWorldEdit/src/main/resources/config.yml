@@ -42,24 +42,15 @@ awe:
     #/awe engine debug on|off. Backward compat: messages.debug=true also
     #turns these lines on (the old [BP RUN] line folded into [ENGINE]).
     debug: false
-    #region streamed flushing (buffered engine): chunks of a running job are
-    #flushed DURING production instead of all at once at job end - blocks pop
-    #progressively, live buffer memory stays bounded by the window, and the
-    #end-of-job flush burst disappears
+    #The transaction engine commits completed jobs as coherent chunks. Keep
+    #streaming disabled: flushing while a producer is still walking a region
+    #is what made large edits visibly slice and revisit chunk columns.
     stream:
-      #flush ready chunks while the job is still producing
-      enabled: true
-      #per job live section window: when a job holds more section buffers
-      #than this, its least-recently-written chunks are flushed until the
-      #job is down to HALF the window (hysteresis: fewer, larger flush
-      #passes instead of re-flushing thin slices of the same chunks).
-      #256 sections = 8 MB of live buffers per job
+      #Legacy compatibility switch; false is the supported transaction mode.
+      enabled: false
+      #Only used by legacy streaming when explicitly enabled.
       window-sections: 256
-      #a chunk not written to for this many placer runs is flushed
-      #(40 runs = ~2 seconds at rendering interval 1)
-      #jobs too small to hit a window watermark wait out this clock, so
-      #small edits appear ~2s late - lower it (10 = ~0.5s) for snappier
-      #small jobs; big-job throughput is unaffected
+      #Only used by legacy streaming when explicitly enabled.
       stale-runs: 40
   rendering:
     #amount of time (in ticks) the server will place a chunk of blocks

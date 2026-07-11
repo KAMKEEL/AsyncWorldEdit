@@ -204,6 +204,59 @@ public final class PendingSection {
     }
 
     /**
+     * Store one constant axis-aligned local box. This is the transaction
+     * engine's hot path for cuboid programs: a complete empty section is
+     * materialized with two array fills instead of 4096 individual writes.
+     * Partial or rewritten ranges still walk their slots so the exact
+     * last-write, count and conditional semantics remain identical to
+     * {@link #set(int, int, int, boolean, int)}.
+     *
+     * @return number of slots that were empty before this write
+     */
+    public int fillBox(int x0, int y0, int z0, int x1, int y1, int z1,
+            int id, int data, boolean notify, int seq) {
+        final int slot = SectionMath.encodeSlot(id, data, notify);
+        if (x0 == 0 && x1 == 15 && y0 == 0 && y1 == 15
+                && z0 == 0 && z1 == 15 && m_count == 0 && m_condCount == 0) {
+            Arrays.fill(m_slots, slot);
+            Arrays.fill(m_seq, seq);
+            m_count = SectionMath.SECTION_SIZE;
+            m_nonAirCount = id == 0 ? 0 : SectionMath.SECTION_SIZE;
+            return SectionMath.SECTION_SIZE;
+        }
+
+        int added = 0;
+        for (int y = y0; y <= y1; y++) {
+            for (int z = z0; z <= z1; z++) {
+                final int first = (y << 8) | (z << 4) | x0;
+                final int last = first + (x1 - x0);
+                for (int index = first; index <= last; index++) {
+                    final int old = m_slots[index];
+                    if (old == SectionMath.EMPTY_SLOT) {
+                        added++;
+                        m_count++;
+                        if (id != 0) {
+                            m_nonAirCount++;
+                        }
+                    } else {
+                        final boolean wasAir = SectionMath.slotId(old) == 0;
+                        final boolean isAir = id == 0;
+                        if (wasAir && !isAir) {
+                            m_nonAirCount++;
+                        } else if (!wasAir && isAir) {
+                            m_nonAirCount--;
+                        }
+                    }
+                    m_slots[index] = slot;
+                    m_seq[index] = seq;
+                    clearConditionalBit(index);
+                }
+            }
+        }
+        return added;
+    }
+
+    /**
      * Store a CONDITIONAL pending block: at flush time the (id, data) is
      * only written when the pre-write world value at this position matches
      * (matchId, matchData); a non-match writes nothing and is never

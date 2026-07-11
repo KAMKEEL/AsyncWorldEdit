@@ -876,13 +876,15 @@ public class ChunkBatchWriter {
         }
 
         final List<DeferredBlock> deferred = new ArrayList<DeferredBlock>();
+        boolean directCommitted = false;
         try {
             final org.bukkit.World bukkit = resolveBukkitWorld(bukkitWorld);
             if (bukkit == null) {
                 //No Bukkit world: classic replay the whole chunk
                 classicPlaceChunk(parent, chunk, deferred);
             } else {
-                flushChunk(new WorldBatch(parent, bukkit), chunk, deferred);
+                directCommitted = flushChunk(new WorldBatch(parent, bukkit), chunk,
+                        deferred, false);
             }
         } catch (Throwable ex) {
             if (!m_flushErrorLogged) {
@@ -892,6 +894,15 @@ public class ChunkBatchWriter {
             }
         } finally {
             replayDeferred(deferred);
+            //A packet is part of the transaction commit, not the direct
+            //section write. Sending it after overflow/deferred writes keeps
+            //the client from observing a stale intermediate chunk.
+            if (directCommitted) {
+                final org.bukkit.World bukkit = resolveBukkitWorld(bukkitWorld);
+                if (bukkit != null) {
+                    bukkit.refreshChunk(chunk.getX(), chunk.getZ());
+                }
+            }
         }
     }
 
@@ -999,13 +1010,22 @@ public class ChunkBatchWriter {
      */
     private void flushChunk(WorldBatch batch, PendingChunk chunk,
             List<DeferredBlock> deferred) {
+        flushChunk(batch, chunk, deferred, true);
+    }
+
+    /**
+     * @return true when the chunk used the direct writer and therefore needs
+     * an authoritative packet at the transaction boundary
+     */
+    private boolean flushChunk(WorldBatch batch, PendingChunk chunk,
+            List<DeferredBlock> deferred, boolean refreshDirect) {
         final NmsChunkWriter nmsWriter = m_nmsWriter;
 
         if (nmsWriter != null && !m_runtimeDisabled
                 && chunk.getCount() >= m_minBlocksPerChunk) {
             try {
                 List<NmsChunkWriter.OverflowBlock> overflow
-                        = nmsWriter.apply(batch.bukkit, chunk);
+                        = nmsWriter.apply(batch.bukkit, chunk, refreshDirect);
                 for (NmsChunkWriter.OverflowBlock block : overflow) {
                     if (BlockType.shouldPlaceLast(block.id)
                             || BlockType.shouldPlaceFinal(block.id)) {
@@ -1019,7 +1039,7 @@ public class ChunkBatchWriter {
                                 block.id, block.data, block.notify);
                     }
                 }
-                return;
+                return true;
             } catch (Throwable ex) {
                 m_runtimeDisabled = true;
                 log("Direct chunk placement failed (" + ex
@@ -1028,6 +1048,7 @@ public class ChunkBatchWriter {
         }
 
         classicPlaceChunk(batch.parent, chunk, deferred);
+        return false;
     }
 
     /**

@@ -226,6 +226,16 @@ public class NmsChunkWriter {
      * should fall back to classic placement
      */
     public List<OverflowBlock> apply(World world, PendingChunk pending) throws Exception {
+        return apply(world, pending, true);
+    }
+
+    /**
+     * Apply a pending chunk. Transaction commits pass {@code false} and
+     * send their authoritative chunk packet only after every direct,
+     * overflow and deferred write for that chunk has completed.
+     */
+    public List<OverflowBlock> apply(World world, PendingChunk pending,
+            boolean refreshAfterApply) throws Exception {
         final int cx = pending.getX();
         final int cz = pending.getZ();
 
@@ -375,8 +385,10 @@ public class NmsChunkWriter {
             m_handles.relight.invoke(handle, pos[0], pos[1], pos[2]);
         }
 
-        //One whole chunk refresh for all watching clients
-        world.refreshChunk(cx, cz);
+        if (refreshAfterApply) {
+            //Legacy window writer path: it owns the whole chunk commit.
+            world.refreshChunk(cx, cz);
+        }
 
         return overflow;
     }

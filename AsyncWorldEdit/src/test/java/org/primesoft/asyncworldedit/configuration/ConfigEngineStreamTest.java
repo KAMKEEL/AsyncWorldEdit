@@ -88,7 +88,7 @@ public class ConfigEngineStreamTest {
     @Test
     public void missingSectionUsesTheStreamDefaults() {
         ConfigEngine config = new ConfigEngine(null);
-        assertTrue(config.isStreamEnabled());
+        assertFalse(config.isStreamEnabled());
         assertEquals(ConfigEngine.DEFAULT_STREAM_WINDOW_SECTIONS,
                 config.getStreamWindowSections());
         assertEquals(ConfigEngine.DEFAULT_STREAM_STALE_RUNS,
@@ -98,7 +98,7 @@ public class ConfigEngineStreamTest {
     @Test
     public void missingStreamKeysUseTheStreamDefaults() {
         ConfigEngine config = new ConfigEngine(section(new HashMap<String, Object>()));
-        assertTrue(config.isStreamEnabled());
+        assertFalse(config.isStreamEnabled());
         assertEquals(256, config.getStreamWindowSections());
         assertEquals(40, config.getStreamStaleRuns());
     }
